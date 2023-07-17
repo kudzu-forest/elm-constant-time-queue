@@ -238,21 +238,21 @@ fixOnlyLeft old =
 -}
 fixOnlyRight : LayerPair x -> LayerPair x
 fixOnlyRight old =
-    let
-        newRightBelow =
-            { thrd = none
-            , scnd = old.below.right.thrd
-            , frst = old.below.right.scnd
-            , cnt = old.below.right.cnt - 1
-            }
-
-        newBelow =
-            { left = old.below.left
-            , right = newRightBelow
-            }
-    in
     case old.below.right.frst of
         Branch { junior, senior } ->
+            let
+                newRightBelow =
+                    { thrd = none
+                    , scnd = old.below.right.thrd
+                    , frst = old.below.right.scnd
+                    , cnt = old.below.right.cnt - 1
+                    }
+
+                newBelow =
+                    { left = old.below.left
+                    , right = newRightBelow
+                    }
+            in
             { below = newBelow
             , above =
                 { left = old.above.left
@@ -273,56 +273,56 @@ fixOnlyRight old =
 -}
 fixLeftAndRight : LayerPair x -> LayerPair x
 fixLeftAndRight old =
-    let
-        newLeftAbove =
-            { thrd = none
-            , scnd = none
-            , frst = old.above.left.thrd
-            , cnt = old.above.left.cnt - 2
-            }
-
-        passed =
-            Branch
-                { junior = old.above.left.scnd
-                , senior = old.above.left.frst
-                }
-
-        newLeftBelow =
-            if old.below.left.cnt == 0 then
-                { thrd = none
-                , scnd = none
-                , frst = passed
-                , cnt = 1
-                }
-
-            else if old.below.left.cnt == 1 then
-                { thrd = none
-                , scnd = passed
-                , frst = old.below.left.frst
-                , cnt = 2
-                }
-
-            else
-                { thrd = passed
-                , scnd = old.below.left.scnd
-                , frst = old.below.left.frst
-                , cnt = 3
-                }
-
-        newRightBelow =
-            { thrd = none
-            , scnd = old.below.right.thrd
-            , frst = old.below.right.scnd
-            , cnt = old.below.right.cnt - 1
-            }
-
-        newBelow =
-            { left = newLeftBelow
-            , right = newRightBelow
-            }
-    in
     case old.below.right.frst of
         Branch { junior, senior } ->
+            let
+                newLeftAbove =
+                    { thrd = none
+                    , scnd = none
+                    , frst = old.above.left.thrd
+                    , cnt = old.above.left.cnt - 2
+                    }
+
+                passed =
+                    Branch
+                        { junior = old.above.left.scnd
+                        , senior = old.above.left.frst
+                        }
+
+                newLeftBelow =
+                    if old.below.left.cnt == 0 then
+                        { thrd = none
+                        , scnd = none
+                        , frst = passed
+                        , cnt = 1
+                        }
+
+                    else if old.below.left.cnt == 1 then
+                        { thrd = none
+                        , scnd = passed
+                        , frst = old.below.left.frst
+                        , cnt = 2
+                        }
+
+                    else
+                        { thrd = passed
+                        , scnd = old.below.left.scnd
+                        , frst = old.below.left.frst
+                        , cnt = 3
+                        }
+
+                newRightBelow =
+                    { thrd = none
+                    , scnd = old.below.right.thrd
+                    , frst = old.below.right.scnd
+                    , cnt = old.below.right.cnt - 1
+                    }
+
+                newBelow =
+                    { left = newLeftBelow
+                    , right = newRightBelow
+                    }
+            in
             case old.above.right.cnt of
                 0 ->
                     { below = newBelow
