@@ -73,7 +73,6 @@ module Queue exposing
         Each `Segment` is composed of one heading red or green layer and
         following zero or more yellow layers,
         or single layer named Bottom.
-
 -}
 {- PERFORMANCE NOTES
    This module is intendet to be used as a low-level tool which is required to have stable and sufficiently good performance.
