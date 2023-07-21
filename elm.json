@@ -3,7 +3,7 @@
     "name": "kudzu-forest/elm-constant-time-queue",
     "summary": "Queue with O(1) enqueueing and dequeueing even in the worst case.",
     "license": "MIT",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "exposed-modules": [
         "Queue"
     ],
@@ -13,5 +13,5 @@
     },
     "test-dependencies": {
         "elm-explorations/test": "2.1.1 <= v < 3.0.0"
-	}
+    }
 }
