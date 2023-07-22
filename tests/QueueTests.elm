@@ -63,7 +63,7 @@ suite =
                     queueHelp li q outL =
                         case li of
                             [] ->
-                                ( q, outL )
+                                ( toListLIFO q, outL, Debug.log "queue length" (length q) )
 
                             ( b, i ) :: rest ->
                                 if b then
@@ -78,7 +78,7 @@ suite =
                     listHelp rst soFar out =
                         case rst of
                             [] ->
-                                ( soFar, out )
+                                ( soFar, out, List.length soFar )
 
                             ( b, i ) :: rest ->
                                 if b then
@@ -91,7 +91,6 @@ suite =
                         listHelp l start []
                 in
                 queue
-                    |> Tuple.mapFirst toListLIFO
                     |> Expect.equal lis
             )
         ]

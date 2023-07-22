@@ -1,7 +1,7 @@
 module Queue exposing
     ( Queue
     , empty, fromListLIFO, fromListFIFO
-    , isEmpty, head
+    , isEmpty, head, length
     , enqueue, dequeue
     , toListLIFO, toListFIFO
     )
@@ -21,7 +21,7 @@ module Queue exposing
 
 # Query
 
-@docs isEmpty, head
+@docs isEmpty, head, length
 
 
 # Modification
@@ -993,3 +993,58 @@ toListHelp q l =
 
         Just h ->
             toListHelp (dequeue q) (h :: l)
+
+
+{-| Returns how many elements is contained in the queue.
+
+        empty
+            |> length
+            --> 0
+
+        empty
+            |> enqueue 1
+            |> enqueue 2
+            |> enqueue 3
+            |> dequeue
+            |> length
+            --> 2
+
+-}
+length : Queue x -> Int
+length (Queue segments) =
+    lengthHelp segments { currentWeight = 1, countedSoFar = 0 }
+
+
+lengthHelp : Segment x -> { currentWeight : Int, countedSoFar : Int } -> Int
+lengthHelp segments { currentWeight, countedSoFar } =
+    case segments of
+        Segment s ->
+            { countedSoFar =
+                countedSoFar
+                    + currentWeight
+                    * (s.head.left.cnt + s.head.right.cnt)
+            , currentWeight = currentWeight * 2
+            }
+                |> lengthHelpHelp s.tail
+                |> lengthHelp s.nextSegment
+
+        Bottom btm ->
+            countedSoFar
+                + currentWeight
+                * (btm.left.cnt + btm.right.cnt)
+
+
+lengthHelpHelp : YellowLayers x -> { currentWeight : Int, countedSoFar : Int } -> { currentWeight : Int, countedSoFar : Int }
+lengthHelpHelp yellowLayers ({ currentWeight, countedSoFar } as intermediate) =
+    case yellowLayers of
+        YCons { yhead, yrest } ->
+            lengthHelpHelp yrest
+                { countedSoFar =
+                    countedSoFar
+                        + currentWeight
+                        * (yhead.left.cnt + yhead.right.cnt)
+                , currentWeight = currentWeight * 2
+                }
+
+        _ ->
+            intermediate
