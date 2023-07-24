@@ -674,7 +674,7 @@ dequeue (Queue s) =
             Queue (Bottom newBottom)
 
 
-{-| Returns the queue as second argument with the element as the first argument injected into the rear side.
+{-| Inject a new element into the rear side of the queue.
 
     empty
         |> enqueue 100
@@ -920,7 +920,12 @@ enqueue x (Queue s) =
 {-| Create queue from list.
 The newest element comes head of the queue.
 
-    ["H","e","l","l","o"]
+    [ "H" -- The Last-In element is "H"
+    , "e"
+    , "l"
+    , "l"
+    , "o"
+    ]
         |> fromListLIFO
         |> head
     --> Just "H"
@@ -934,7 +939,8 @@ fromListLIFO l =
 {-| Create queue from list.
 The oldest element of the list comes head of the queue.
 
-    ["H"]
+    []
+        |> (::) "H" -- The First-In element is "H"
         |> (::) "e"
         |> (::) "l"
         |> (::) "l"
@@ -959,12 +965,12 @@ fromListHelp l q =
             q
 
 
-{-| Convert a queue to List. The last element in the queue will become the head of the returned list.
+{-| Convert a queue to List. The Last-In element in the queue will become the head of the returned list.
 
     empty
         |> enqueue 100
         |> enqueue 200
-        |> enqueue 300
+        |> enqueue 300 -- The Last-In element is 300
         |> toListLIFO
     --> [300,200,100]
 
@@ -974,10 +980,10 @@ toListLIFO q =
     toListHelp q []
 
 
-{-| Convert a queue to List. The first element in the queue will become the head of the returned list.
+{-| Convert a queue to List. The First-In element in the queue will become the head of the returned list.
 
     empty
-        |> enqueue 100
+        |> enqueue 100 -- The First-In element is 100
         |> enqueue 200
         |> enqueue 300
         |> toListFIFO
