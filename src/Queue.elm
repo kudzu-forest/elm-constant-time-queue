@@ -1,7 +1,7 @@
 module Queue exposing
     ( Queue
     , empty, fromListLIFO, fromListFIFO
-    , isEmpty, head, length
+    , isEmpty, head, rear, length
     , enqueue, dequeue
     , toListLIFO, toListFIFO
     )
@@ -21,7 +21,7 @@ module Queue exposing
 
 # Query
 
-@docs isEmpty, head, length
+@docs isEmpty, head, rear, length
 
 
 # Modification
@@ -155,7 +155,7 @@ type Segment a
 
 {-| Returns empty queue.
 
-       head empty == Nothing
+    head empty == Nothing
 
 -}
 empty : Queue x
@@ -165,21 +165,26 @@ empty =
 
 {-| Returns `True` if the argument has no element.
 
-        empty
-            |> enqueue "a"
-            |> isEmpty
-        --> False
+    empty
+        |> enqueue "a"
+        |> isEmpty
+    --> False
 
-        empty
-            |> enqueue "a"
-            |> dequeue
-            |> isEmpty
-        --> True
+    empty
+        |> enqueue "a"
+        |> dequeue
+        |> isEmpty
+    --> True
 
 -}
 isEmpty : Queue x -> Bool
-isEmpty q =
-    q == empty
+isEmpty (Queue s) =
+    case s of
+        Segment _ ->
+            False
+
+        Bottom btm ->
+            btm.left.cnt + btm.right.cnt == 0
 
 
 {-| above.left.cnt == 3 && below.left.cnt <= 2.
@@ -554,16 +559,16 @@ type Queue a
 
 {-| Returns the oldest element injected in the queue wrapped in `Maybe`.
 
-        empty
-            |> head
-        --> Nothing
+    empty
+        |> head
+    --> Nothing
 
-        empty
-            |> enqueue "e"
-            |> enqueue "l"
-            |> enqueue "m"
-            |> head
-        --> Just "e"
+    empty
+        |> enqueue "e"
+        |> enqueue "l"
+        |> enqueue "m"
+        |> head
+    --> Just "e"
 
 -}
 head : Queue a -> Maybe a
@@ -588,16 +593,16 @@ head (Queue segment) =
 
 {-| Returns queue without the oldest element of the given queue.
 
-        empty
-            |> enqueue "e"
-            |> enqueue "l"
-            |> enqueue "m"
-            |> enqueue "i"
-            |> enqueue "s"
-            |> enqueue "h"
-            |> dequeue
-            |> head
-        --> Just "l"
+    empty
+        |> enqueue "e"
+        |> enqueue "l"
+        |> enqueue "m"
+        |> enqueue "i"
+        |> enqueue "s"
+        |> enqueue "h"
+        |> dequeue
+        |> head
+    --> Just "l"
 
 -}
 dequeue : Queue a -> Queue a
@@ -671,11 +676,11 @@ dequeue (Queue s) =
 
 {-| Returns the queue as second argument with the element as the first argument injected into the rear side.
 
-        empty
-            |> enqueue 100
-            |> enqueue 200
-            |> head
-        --> Just 100
+    empty
+        |> enqueue 100
+        |> enqueue 200
+        |> head
+    --> Just 100
 
 -}
 enqueue : x -> Queue x -> Queue x
@@ -915,10 +920,10 @@ enqueue x (Queue s) =
 {-| Create queue from list.
 The newest element comes head of the queue.
 
-        ["H","e","l","l","o"]
-            |> fromListLIFO
-            |> head
-        --> Just "H"
+    ["H","e","l","l","o"]
+        |> fromListLIFO
+        |> head
+    --> Just "H"
 
 -}
 fromListLIFO : List x -> Queue x
@@ -929,14 +934,14 @@ fromListLIFO l =
 {-| Create queue from list.
 The oldest element of the list comes head of the queue.
 
-        ["H"]
-            |> (::) "e"
-            |> (::) "l"
-            |> (::) "l"
-            |> (::) "o"
-            |> fromListFIFO
-            |> head
-        --> Just "H"
+    ["H"]
+        |> (::) "e"
+        |> (::) "l"
+        |> (::) "l"
+        |> (::) "o"
+        |> fromListFIFO
+        |> head
+    --> Just "H"
 
 -}
 fromListFIFO : List x -> Queue x
@@ -956,12 +961,12 @@ fromListHelp l q =
 
 {-| Convert a queue to List. The last element in the queue will become the head of the returned list.
 
-        empty
-            |> enqueue 100
-            |> enqueue 200
-            |> enqueue 300
-            |> toListLIFO
-        --> [300,200,100]
+    empty
+        |> enqueue 100
+        |> enqueue 200
+        |> enqueue 300
+        |> toListLIFO
+    --> [300,200,100]
 
 -}
 toListLIFO : Queue x -> List x
@@ -971,12 +976,12 @@ toListLIFO q =
 
 {-| Convert a queue to List. The first element in the queue will become the head of the returned list.
 
-        empty
-            |> enqueue 100
-            |> enqueue 200
-            |> enqueue 300
-            |> toListFIFO
-        --> [100,200,300]
+    empty
+        |> enqueue 100
+        |> enqueue 200
+        |> enqueue 300
+        |> toListFIFO
+    --> [100,200,300]
 
 -}
 toListFIFO : Queue x -> List x
@@ -995,19 +1000,19 @@ toListHelp q l =
             toListHelp (dequeue q) (h :: l)
 
 
-{-| Returns how many elements is contained in the queue.
+{-| Returns how many elements is contained in the queue. The time complexity is _O(log N)_.
 
-        empty
-            |> length
-            --> 0
+    empty
+        |> length
+    --> 0
 
-        empty
-            |> enqueue 1
-            |> enqueue 2
-            |> enqueue 3
-            |> dequeue
-            |> length
-            --> 2
+    empty
+        |> enqueue 1
+        |> enqueue 2
+        |> enqueue 3
+        |> dequeue
+        |> length
+    --> 2
 
 -}
 length : Queue x -> Int
@@ -1048,3 +1053,85 @@ lengthHelpHelp yellowLayers ({ currentWeight, countedSoFar } as intermediate) =
 
         _ ->
             intermediate
+
+
+{-| Returns the newest element if exists, wrapped in `Maybe`.
+Worst-case time complexity of this operation is _O(log N)_.
+
+    empty
+        |> enqueue 100
+        |> enqueue 200
+        |> rear
+    --> Just 200
+
+    empty
+        |> enqueue 100
+        |> dequeue
+        |> rear
+    --> Nothing
+
+-}
+rear : Queue x -> Maybe x
+rear (Queue segment) =
+    rearHelp segment
+
+
+rearHelp : Segment x -> Maybe x
+rearHelp segment =
+    case segment of
+        Segment s ->
+            if s.head.left.cnt == 0 then
+                case s.tail of
+                    YNil () ->
+                        rearHelp s.nextSegment
+
+                    YCons { yhead, yrest } ->
+                        { head = yhead
+                        , tail = yrest
+                        , nextSegment = s.nextSegment
+                        }
+                            |> Segment
+                            |> rearHelp
+
+            else
+                s.head.left
+                    |> takeColumnRearNode
+                    |> takeYoungestLeafInNode
+
+        Bottom btm ->
+            let
+                targetColumn =
+                    if btm.left.cnt == 0 then
+                        btm.right
+
+                    else
+                        btm.left
+            in
+            targetColumn
+                |> takeColumnRearNode
+                |> takeYoungestLeafInNode
+
+
+takeColumnRearNode : Column x -> Node x
+takeColumnRearNode { thrd, scnd, frst, cnt } =
+    if cnt == 3 then
+        thrd
+
+    else if cnt == 2 then
+        scnd
+
+    else
+        frst
+
+
+takeYoungestLeafInNode : Node x -> Maybe x
+takeYoungestLeafInNode n =
+    case n of
+        Branch { junior } ->
+            takeYoungestLeafInNode junior
+
+        Leaf x ->
+            Just x
+
+        None () ->
+            Nothing
