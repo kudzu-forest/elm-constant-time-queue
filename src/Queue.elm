@@ -79,8 +79,6 @@ module Queue exposing
    So the author paid full attention on run-time performance,
    especially on following points.
 
-   * Every inner function is designed to be unary in avoidance of
-       compiled JS code having `A2(...)` function call.
    * All custom types has exactly one data to benefit from "hidden class" generation in some JS engine.
    * No `case` expression is used in `let` clause because that usage leads to generation of immediate-function like `var _v0 = (function(){...})()` in compiled JS code.
    * All `if` expression compares literal integer in order not to call high-cost comparison function for elmish data structures.
@@ -88,69 +86,89 @@ module Queue exposing
 -}
 
 
-type Node a
+type Node x
     = None ()
-    | Leaf a
-    | Branch { junior : Node a, senior : Node a }
+    | Leaf x
+    | Branch { left : Node x, right : Node x }
 
 
-none : Node a
-none =
-    None ()
-
-
-type alias Column a =
-    { frst : Node a
-    , scnd : Node a
-    , thrd : Node a
+type alias Column x =
+    { thrd : Node x
+    , scnd : Node x
+    , frst : Node x
     , cnt : Int
     }
 
 
+type alias Layer x =
+    { left : Column x
+    , right : Column x
+    }
+
+
+type alias YellowContent x =
+    { head : Layer x, tail : YellowLayers x }
+
+
+type YellowLayers x
+    = YNil ()
+    | YCons (YellowContent x)
+
+
+type alias SegmentContent x =
+    { head : Layer x
+    , tail : YellowLayers x
+    , next : Segment x
+    }
+
+
+type Segment x
+    = Segment (SegmentContent x)
+    | Bottom ()
+
+
+{-| Representation of First-In, First-Out(FIFO) data structure.
+-}
+type Queue x
+    = Queue (SegmentContent x)
+
+
+emptyNode : Node x
+emptyNode =
+    None ()
+
+
 emptyColumn : Column x
 emptyColumn =
-    { frst = none, scnd = none, thrd = none, cnt = 0 }
-
-
-type alias Layer a =
-    { left : Column a
-    , right : Column a
-    }
+    Column emptyNode emptyNode emptyNode 0
 
 
 emptyLayer : Layer x
 emptyLayer =
-    { left = emptyColumn, right = emptyColumn }
+    Layer emptyColumn emptyColumn
 
 
-type alias LayerPair x =
-    { above : Layer x
-    , below : Layer x
-    }
+emptyYellowContent : YellowContent x
+emptyYellowContent =
+    { head = emptyLayer, tail = emptyYellowLayers }
 
 
-emptyLayerPair : LayerPair x
-emptyLayerPair =
-    { above = emptyLayer, below = emptyLayer }
-
-
-type YellowLayers a
-    = YCons { yhead : Layer a, yrest : YellowLayers a }
-    | YNil ()
-
-
-ynil : YellowLayers a
-ynil =
+emptyYellowLayers : YellowLayers x
+emptyYellowLayers =
     YNil ()
 
 
-type Segment a
-    = Segment
-        { head : Layer a
-        , tail : YellowLayers a
-        , nextSegment : Segment a
-        }
-    | Bottom (Layer a)
+bottom : Segment x
+bottom =
+    Bottom ()
+
+
+emptySegmentContent : SegmentContent x
+emptySegmentContent =
+    { head = emptyLayer
+    , tail = emptyYellowLayers
+    , next = bottom
+    }
 
 
 {-| Returns empty queue.
@@ -160,7 +178,516 @@ type Segment a
 -}
 empty : Queue x
 empty =
-    Queue (Bottom emptyLayer)
+    Queue emptySegmentContent
+
+
+fix : Layer x -> Layer x -> YellowLayers x -> Segment x -> SegmentContent x
+fix above below tail next =
+    case below.right.frst of
+        Branch b ->
+            let
+                newAbove =
+                    { left =
+                        if above.left.cnt >= 2 then
+                            { thrd = emptyNode
+                            , scnd = emptyNode
+                            , frst = above.left.thrd
+                            , cnt = above.left.cnt - 2
+                            }
+
+                        else
+                            above.left
+                    , right =
+                        if above.right.cnt >= 2 then
+                            above.right
+
+                        else if above.right.cnt == 1 then
+                            { thrd = b.left
+                            , scnd = b.right
+                            , frst = above.right.frst
+                            , cnt = 3
+                            }
+
+                        else
+                            { thrd = emptyNode
+                            , scnd = b.left
+                            , frst = b.right
+                            , cnt = 2
+                            }
+                    }
+
+                downNode =
+                    Branch
+                        { left = above.left.scnd
+                        , right = above.left.frst
+                        }
+
+                newBelow =
+                    { left =
+                        if above.left.cnt >= 2 then
+                            if below.left.cnt == 2 then
+                                { thrd = downNode
+                                , scnd = below.left.scnd
+                                , frst = below.left.frst
+                                , cnt = 3
+                                }
+
+                            else if below.left.cnt == 1 then
+                                { thrd = emptyNode
+                                , scnd = downNode
+                                , frst = below.left.frst
+                                , cnt = 2
+                                }
+
+                            else
+                                { thrd = emptyNode
+                                , scnd = emptyNode
+                                , frst = downNode
+                                , cnt = 1
+                                }
+
+                        else
+                            below.left
+                    , right =
+                        if above.right.cnt >= 2 then
+                            below.right
+
+                        else
+                            { thrd = emptyNode
+                            , scnd = below.right.thrd
+                            , frst = below.right.scnd
+                            , cnt = below.right.cnt - 1
+                            }
+                    }
+            in
+            case next of
+                Segment _ ->
+                    if
+                        (newBelow.left.cnt == 3)
+                            || (newBelow.right.cnt == 0)
+                            || ((newBelow.left.cnt <= 1)
+                                    && (newBelow.right.cnt >= 2)
+                               )
+                    then
+                        { head = newAbove
+                        , tail = emptyYellowLayers
+                        , next =
+                            Segment
+                                { head = newBelow
+                                , tail = tail
+                                , next = next
+                                }
+                        }
+
+                    else
+                        { head = newAbove
+                        , tail =
+                            YCons
+                                { head = newBelow
+                                , tail = tail
+                                }
+                        , next = next
+                        }
+
+                Bottom () ->
+                    let
+                        btm =
+                            fixBottom newBelow
+                    in
+                    { head = newAbove
+                    , tail = emptyYellowLayers
+                    , next =
+                        if btm.head.right.cnt == 0 then
+                            bottom
+
+                        else
+                            Segment btm
+                    }
+
+        _ ->
+            emptySegmentContent
+
+
+fixBottom : Layer x -> SegmentContent x
+fixBottom btm =
+    case btm.right.cnt of
+        3 ->
+            if btm.left.cnt == 3 then
+                { head =
+                    { left = emptyColumn
+                    , right =
+                        { thrd = emptyNode
+                        , scnd = btm.right.scnd
+                        , frst = btm.right.frst
+                        , cnt = 2
+                        }
+                    }
+                , tail = emptyYellowLayers
+                , next =
+                    { head =
+                        { left = emptyColumn
+                        , right =
+                            { thrd = emptyNode
+                            , scnd =
+                                Branch
+                                    { left = btm.left.thrd
+                                    , right = btm.left.scnd
+                                    }
+                            , frst =
+                                Branch
+                                    { left = btm.left.frst
+                                    , right = btm.right.thrd
+                                    }
+                            , cnt = 2
+                            }
+                        }
+                    , tail = emptyYellowLayers
+                    , next = bottom
+                    }
+                        |> Segment
+                }
+
+            else
+                { head = btm
+                , tail = emptyYellowLayers
+                , next = bottom
+                }
+
+        2 ->
+            { head =
+                { left =
+                    if btm.left.cnt <= 1 then
+                        emptyColumn
+
+                    else
+                        { thrd = emptyNode
+                        , scnd = btm.left.thrd
+                        , frst = btm.left.scnd
+                        , cnt = btm.left.cnt - 1
+                        }
+                , right =
+                    { thrd = btm.left.frst
+                    , scnd = btm.right.scnd
+                    , frst = btm.right.frst
+                    , cnt =
+                        if btm.left.cnt == 0 then
+                            2
+
+                        else
+                            3
+                    }
+                }
+            , tail = emptyYellowLayers
+            , next = bottom
+            }
+
+        1 ->
+            { head =
+                { left =
+                    if btm.left.cnt <= 2 then
+                        emptyColumn
+
+                    else
+                        { thrd = emptyNode
+                        , scnd = emptyNode
+                        , frst = btm.left.scnd
+                        , cnt = btm.left.cnt - 2
+                        }
+                , right =
+                    { thrd = btm.left.scnd
+                    , scnd = btm.left.frst
+                    , frst = btm.right.frst
+                    , cnt =
+                        if btm.left.cnt >= 2 then
+                            3
+
+                        else
+                            1 + btm.left.cnt
+                    }
+                }
+            , tail = emptyYellowLayers
+            , next = bottom
+            }
+
+        _ ->
+            { head =
+                { left =
+                    emptyColumn
+                , right =
+                    btm.left
+                }
+            , tail = emptyYellowLayers
+            , next = bottom
+            }
+
+
+{-| Inject a new element into the rear side of the queue.
+
+    empty
+        |> enqueue 100
+        |> enqueue 200
+        |> head
+    --> Just 100
+
+-}
+enqueue : x -> Queue x -> Queue x
+enqueue x (Queue old) =
+    let
+        l =
+            old.head.left
+
+        newLeftCnt =
+            l.cnt + 1
+
+        newLeft =
+            if newLeftCnt == 3 then
+                { thrd = Leaf x
+                , scnd = l.scnd
+                , frst = l.frst
+                , cnt = 3
+                }
+
+            else if newLeftCnt == 2 then
+                { thrd = emptyNode
+                , scnd = Leaf x
+                , frst = l.frst
+                , cnt = 2
+                }
+
+            else
+                { thrd = emptyNode
+                , scnd = emptyNode
+                , frst = Leaf x
+                , cnt = 1
+                }
+
+        newHead =
+            { left = newLeft
+            , right = old.head.right
+            }
+    in
+    if newLeftCnt == 1 then
+        { head = newHead
+        , tail = old.tail
+        , next = old.next
+        }
+            |> Queue
+
+    else if newLeftCnt == 3 then
+        case old.next of
+            Segment next ->
+                case old.tail of
+                    YCons y ->
+                        fix
+                            newHead
+                            y.head
+                            y.tail
+                            old.next
+                            |> Queue
+
+                    YNil () ->
+                        fix
+                            newHead
+                            next.head
+                            next.tail
+                            next.next
+                            |> Queue
+
+            Bottom () ->
+                Queue (fixBottom newHead)
+
+    else
+        case old.next of
+            Segment next ->
+                if
+                    (next.head.left.cnt == 3)
+                        || (next.head.right.cnt == 0)
+                then
+                    case next.tail of
+                        YCons y ->
+                            let
+                                fixed =
+                                    fix
+                                        next.head
+                                        y.head
+                                        y.tail
+                                        next.next
+                            in
+                            Queue
+                                { head = newHead
+                                , tail = old.tail
+                                , next = Segment fixed
+                                }
+
+                        YNil () ->
+                            case next.next of
+                                Segment nextnext ->
+                                    let
+                                        fixed =
+                                            fix
+                                                next.head
+                                                nextnext.head
+                                                nextnext.tail
+                                                nextnext.next
+                                    in
+                                    Queue
+                                        { head = newHead
+                                        , tail = old.tail
+                                        , next = Segment fixed
+                                        }
+
+                                Bottom () ->
+                                    Queue
+                                        { head = newHead
+                                        , tail = old.tail
+                                        , next = old.next
+                                        }
+
+                else
+                    Queue
+                        { head = newHead
+                        , tail = old.tail
+                        , next = old.next
+                        }
+
+            Bottom () ->
+                Queue (fixBottom newHead)
+
+
+{-| Returns queue without the oldest element of the given queue.
+
+    empty
+        |> enqueue "e"
+        |> enqueue "l"
+        |> enqueue "m"
+        |> enqueue "i"
+        |> enqueue "s"
+        |> enqueue "h"
+        |> dequeue
+        |> head
+    --> Just "l"
+
+-}
+dequeue : Queue x -> Queue x
+dequeue (Queue old) =
+    if old.head.right.cnt == 0 then
+        if old.head.left.cnt == 0 then
+            empty
+
+        else
+            Queue (fixBottom old.head)
+                |> dequeue
+
+    else
+        let
+            r =
+                old.head.right
+
+            newRightCnt =
+                r.cnt - 1
+
+            newRight =
+                if newRightCnt == 0 then
+                    emptyColumn
+
+                else
+                    { thrd = emptyNode
+                    , scnd = r.thrd
+                    , frst = r.scnd
+                    , cnt = newRightCnt
+                    }
+
+            newHead =
+                { left = old.head.left
+                , right = newRight
+                }
+        in
+        if newRightCnt == 2 then
+            Queue
+                { head = newHead
+                , tail = old.tail
+                , next = old.next
+                }
+
+        else if newRightCnt == 0 then
+            case old.next of
+                Segment next ->
+                    case old.tail of
+                        YCons y ->
+                            fix
+                                newHead
+                                y.head
+                                y.tail
+                                old.next
+                                |> Queue
+
+                        YNil () ->
+                            fix
+                                newHead
+                                next.head
+                                next.tail
+                                next.next
+                                |> Queue
+
+                Bottom () ->
+                    Queue (fixBottom newHead)
+
+        else
+            case old.next of
+                Segment next ->
+                    if
+                        (next.head.left.cnt == 3)
+                            || (next.head.right.cnt == 0)
+                    then
+                        case next.tail of
+                            YCons y ->
+                                let
+                                    fixed =
+                                        fix
+                                            next.head
+                                            y.head
+                                            y.tail
+                                            next.next
+                                in
+                                Queue
+                                    { head = newHead
+                                    , tail = old.tail
+                                    , next = Segment fixed
+                                    }
+
+                            YNil () ->
+                                case next.next of
+                                    Segment nextnext ->
+                                        let
+                                            fixed =
+                                                fix
+                                                    next.head
+                                                    nextnext.head
+                                                    nextnext.tail
+                                                    nextnext.next
+                                        in
+                                        Queue
+                                            { head = newHead
+                                            , tail = old.tail
+                                            , next = Segment fixed
+                                            }
+
+                                    Bottom () ->
+                                        Queue
+                                            { head = newHead
+                                            , tail = old.tail
+                                            , next = old.next
+                                            }
+
+                    else
+                        Queue
+                            { head = newHead
+                            , tail = old.tail
+                            , next = old.next
+                            }
+
+                Bottom () ->
+                    Queue (fixBottom newHead)
 
 
 {-| Returns `True` if the argument has no element.
@@ -178,383 +705,9 @@ empty =
 
 -}
 isEmpty : Queue x -> Bool
-isEmpty (Queue s) =
-    case s of
-        Segment _ ->
-            False
-
-        Bottom btm ->
-            btm.left.cnt + btm.right.cnt == 0
-
-
-{-| above.left.cnt == 3 && below.left.cnt <= 2.
--}
-fixOnlyLeft : LayerPair x -> LayerPair x
-fixOnlyLeft old =
-    let
-        newAbove =
-            { left =
-                { thrd = none
-                , scnd = none
-                , frst = old.above.left.thrd
-                , cnt = 1
-                }
-            , right = old.above.right
-            }
-
-        passed =
-            Branch
-                { junior = old.above.left.scnd
-                , senior = old.above.left.frst
-                }
-
-        newLeftBelow =
-            if old.below.left.cnt == 0 then
-                { thrd = none
-                , scnd = none
-                , frst = passed
-                , cnt = 1
-                }
-
-            else if old.below.left.cnt == 1 then
-                { thrd = none
-                , scnd = passed
-                , frst = old.below.left.frst
-                , cnt = 2
-                }
-
-            else
-                { thrd = passed
-                , scnd = old.below.left.scnd
-                , frst = old.below.left.frst
-                , cnt = 3
-                }
-
-        newBelow =
-            { left = newLeftBelow
-            , right = old.below.right
-            }
-    in
-    { above = newAbove, below = newBelow }
-
-
-{-| above.right.cnt == 0 && below.right.cnt /= 0.
--}
-fixOnlyRight : LayerPair x -> LayerPair x
-fixOnlyRight old =
-    case old.below.right.frst of
-        Branch { junior, senior } ->
-            let
-                newRightBelow =
-                    { thrd = none
-                    , scnd = old.below.right.thrd
-                    , frst = old.below.right.scnd
-                    , cnt = old.below.right.cnt - 1
-                    }
-
-                newBelow =
-                    { left = old.below.left
-                    , right = newRightBelow
-                    }
-            in
-            { below = newBelow
-            , above =
-                { left = old.above.left
-                , right =
-                    { thrd = none
-                    , scnd = junior
-                    , frst = senior
-                    , cnt = 2
-                    }
-                }
-            }
-
-        _ ->
-            emptyLayerPair
-
-
-{-| above.left >= 2 && above.right.cnt <= 1 && below is yellow or green.
--}
-fixLeftAndRight : LayerPair x -> LayerPair x
-fixLeftAndRight old =
-    case old.below.right.frst of
-        Branch { junior, senior } ->
-            let
-                newLeftAbove =
-                    { thrd = none
-                    , scnd = none
-                    , frst = old.above.left.thrd
-                    , cnt = old.above.left.cnt - 2
-                    }
-
-                passed =
-                    Branch
-                        { junior = old.above.left.scnd
-                        , senior = old.above.left.frst
-                        }
-
-                newLeftBelow =
-                    if old.below.left.cnt == 0 then
-                        { thrd = none
-                        , scnd = none
-                        , frst = passed
-                        , cnt = 1
-                        }
-
-                    else if old.below.left.cnt == 1 then
-                        { thrd = none
-                        , scnd = passed
-                        , frst = old.below.left.frst
-                        , cnt = 2
-                        }
-
-                    else
-                        { thrd = passed
-                        , scnd = old.below.left.scnd
-                        , frst = old.below.left.frst
-                        , cnt = 3
-                        }
-
-                newRightBelow =
-                    { thrd = none
-                    , scnd = old.below.right.thrd
-                    , frst = old.below.right.scnd
-                    , cnt = old.below.right.cnt - 1
-                    }
-
-                newBelow =
-                    { left = newLeftBelow
-                    , right = newRightBelow
-                    }
-            in
-            case old.above.right.cnt of
-                0 ->
-                    { below = newBelow
-                    , above =
-                        { left = newLeftAbove
-                        , right =
-                            { thrd = none
-                            , scnd = junior
-                            , frst = senior
-                            , cnt = 2
-                            }
-                        }
-                    }
-
-                _ ->
-                    { below = newBelow
-                    , above =
-                        { left = newLeftAbove
-                        , right =
-                            { thrd = junior
-                            , scnd = senior
-                            , frst = old.above.right.frst
-                            , cnt = 3
-                            }
-                        }
-                    }
-
-        _ ->
-            emptyLayerPair
-
-
-fixBottom : LayerPair x -> Segment x
-fixBottom lowestPair =
-    let
-        { above, below } =
-            if lowestPair.above.left.cnt <= 1 then
-                fixOnlyRight lowestPair
-
-            else if lowestPair.above.right.cnt >= 2 then
-                fixOnlyLeft lowestPair
-
-            else
-                fixLeftAndRight lowestPair
-
-        newBottomSegment =
-            if below.left.cnt == 3 then
-                if below.right.cnt == 0 then
-                    Bottom
-                        { left = emptyColumn
-                        , right = below.left
-                        }
-
-                else if below.right.cnt == 1 then
-                    Bottom
-                        { left =
-                            { thrd = none
-                            , scnd = none
-                            , frst = below.left.thrd
-                            , cnt = 1
-                            }
-                        , right =
-                            { thrd = below.left.scnd
-                            , scnd = below.left.frst
-                            , frst = below.right.frst
-                            , cnt = 3
-                            }
-                        }
-
-                else if below.right.cnt == 2 then
-                    Bottom
-                        { left =
-                            { thrd = none
-                            , scnd = below.left.thrd
-                            , frst = below.left.scnd
-                            , cnt = 2
-                            }
-                        , right =
-                            { thrd = below.left.frst
-                            , scnd = below.right.scnd
-                            , frst = below.right.frst
-                            , cnt = 3
-                            }
-                        }
-
-                else
-                    Segment
-                        { head =
-                            { left = emptyColumn
-                            , right =
-                                { thrd = none
-                                , scnd = below.right.scnd
-                                , frst = below.right.frst
-                                , cnt = 2
-                                }
-                            }
-                        , tail = ynil
-                        , nextSegment =
-                            Bottom
-                                { left = emptyColumn
-                                , right =
-                                    { thrd = none
-                                    , scnd =
-                                        Branch
-                                            { junior =
-                                                below.left.thrd
-                                            , senior =
-                                                below.left.scnd
-                                            }
-                                    , frst =
-                                        Branch
-                                            { junior =
-                                                below.left.frst
-                                            , senior =
-                                                below.right.thrd
-                                            }
-                                    , cnt = 2
-                                    }
-                                }
-                        }
-
-            else if below.right.cnt == 0 then
-                Bottom
-                    { left = emptyColumn
-                    , right = below.left
-                    }
-
-            else
-                Bottom below
-    in
-    case newBottomSegment of
-        Bottom e ->
-            if e.left.cnt + e.right.cnt == 0 then
-                Bottom above
-
-            else
-                Segment
-                    { head = above
-                    , tail = ynil
-                    , nextSegment = newBottomSegment
-                    }
-
-        _ ->
-            Segment
-                { head = above
-                , tail = ynil
-                , nextSegment = newBottomSegment
-                }
-
-
-fixRedTail : { head : Layer x, tail : YellowLayers x, nextSegment : Segment x } -> Segment x
-fixRedTail r =
-    let
-        fixFunc =
-            if r.head.left.cnt <= 1 then
-                fixOnlyRight
-
-            else if r.head.right.cnt >= 2 then
-                fixOnlyLeft
-
-            else
-                fixLeftAndRight
-    in
-    case r.tail of
-        YCons { yhead, yrest } ->
-            let
-                { above, below } =
-                    fixFunc { above = r.head, below = yhead }
-            in
-            if below.left.cnt == 3 || below.right.cnt == 0 then
-                Segment
-                    { head = above
-                    , tail = ynil
-                    , nextSegment =
-                        Segment
-                            { head = below
-                            , tail = yrest
-                            , nextSegment = r.nextSegment
-                            }
-                    }
-
-            else
-                Segment
-                    { head = above
-                    , tail =
-                        YCons { yhead = below, yrest = yrest }
-                    , nextSegment = r.nextSegment
-                    }
-
-        YNil () ->
-            case r.nextSegment of
-                Segment next ->
-                    let
-                        { above, below } =
-                            fixFunc { above = r.head, below = next.head }
-                    in
-                    if below.left.cnt <= 1 && below.right.cnt >= 2 then
-                        Segment
-                            { head = above
-                            , tail = ynil
-                            , nextSegment =
-                                Segment
-                                    { head = below
-                                    , tail = next.tail
-                                    , nextSegment =
-                                        next.nextSegment
-                                    }
-                            }
-
-                    else
-                        Segment
-                            { head = above
-                            , tail =
-                                YCons
-                                    { yhead = below
-                                    , yrest = next.tail
-                                    }
-                            , nextSegment =
-                                next.nextSegment
-                            }
-
-                Bottom bottom ->
-                    fixBottom { above = r.head, below = bottom }
-
-
-{-| Representation of First-In, First-Out(FIFO) data structure.
--}
-type Queue a
-    = Queue (Segment a)
+isEmpty (Queue sgm) =
+    (sgm.head.right.cnt == 0)
+        && (sgm.head.left.cnt == 0)
 
 
 {-| Returns the oldest element injected in the queue wrapped in `Maybe`.
@@ -571,350 +724,218 @@ type Queue a
     --> Just "e"
 
 -}
-head : Queue a -> Maybe a
-head (Queue segment) =
-    case segment of
-        Segment s ->
-            case s.head.right.frst of
-                Leaf a ->
-                    Just a
+head : Queue x -> Maybe x
+head (Queue sgm) =
+    case sgm.head.right.frst of
+        Leaf x ->
+            Just x
 
-                _ ->
-                    Nothing
-
-        Bottom b ->
-            case b.right.frst of
-                Leaf a ->
-                    Just a
+        _ ->
+            case sgm.head.left.frst of
+                Leaf x ->
+                    Just x
 
                 _ ->
                     Nothing
 
 
-{-| Returns queue without the oldest element of the given queue.
-
-    empty
-        |> enqueue "e"
-        |> enqueue "l"
-        |> enqueue "m"
-        |> enqueue "i"
-        |> enqueue "s"
-        |> enqueue "h"
-        |> dequeue
-        |> head
-    --> Just "l"
-
--}
-dequeue : Queue a -> Queue a
-dequeue (Queue s) =
-    case s of
-        Segment oldSegment ->
-            let
-                newHeadRight =
-                    { thrd = none
-                    , scnd = oldSegment.head.right.thrd
-                    , frst = oldSegment.head.right.scnd
-                    , cnt = oldSegment.head.right.cnt - 1
-                    }
-
-                toBeFixed =
-                    { head =
-                        { left = oldSegment.head.left
-                        , right = newHeadRight
-                        }
-                    , tail = oldSegment.tail
-                    , nextSegment = oldSegment.nextSegment
-                    }
-            in
-            if newHeadRight.cnt == 0 then
-                Queue (fixRedTail toBeFixed)
-
-            else if toBeFixed.head.left.cnt <= 1 && newHeadRight.cnt >= 2 then
-                Queue (Segment toBeFixed)
-
-            else
-                case toBeFixed.nextSegment of
-                    Segment next ->
-                        if next.head.left.cnt == 3 || next.head.right.cnt == 0 then
-                            Queue
-                                (Segment
-                                    { head = toBeFixed.head
-                                    , tail = toBeFixed.tail
-                                    , nextSegment =
-                                        fixRedTail next
-                                    }
-                                )
-
-                        else
-                            Queue (Segment toBeFixed)
-
-                    Bottom _ ->
-                        Queue (Segment toBeFixed)
-
-        Bottom oldBottom ->
-            let
-                newRight =
-                    { thrd = none
-                    , scnd = oldBottom.right.thrd
-                    , frst = oldBottom.right.scnd
-                    , cnt = oldBottom.right.cnt - 1
-                    }
-
-                newBottom =
-                    if newRight.cnt <= 0 then
-                        { left = emptyColumn
-                        , right = oldBottom.left
-                        }
-
-                    else
-                        { left = oldBottom.left
-                        , right = newRight
-                        }
-            in
-            Queue (Bottom newBottom)
-
-
-{-| Inject a new element into the rear side of the queue.
+{-| Returns the newest element if exists, wrapped in `Maybe`.
+Worst-case time complexity of this operation is _O(log N)_.
 
     empty
         |> enqueue 100
         |> enqueue 200
-        |> head
-    --> Just 100
+        |> rear
+    --> Just 200
+
+    empty
+        |> enqueue 100
+        |> dequeue
+        |> rear
+    --> Nothing
 
 -}
-enqueue : x -> Queue x -> Queue x
-enqueue x (Queue s) =
-    case s of
-        Segment oldSegment ->
-            let
-                newHeadLeft =
-                    if oldSegment.head.left.cnt == 0 then
-                        { thrd = none
-                        , scnd = none
-                        , frst = Leaf x
-                        , cnt = 1
-                        }
+rear : Queue x -> Maybe x
+rear (Queue sgm) =
+    rearHelp sgm
 
-                    else if oldSegment.head.left.cnt == 1 then
-                        { thrd = none
-                        , scnd = Leaf x
-                        , frst = oldSegment.head.left.frst
-                        , cnt = 2
-                        }
 
-                    else
-                        { thrd = Leaf x
-                        , scnd = oldSegment.head.left.scnd
-                        , frst = oldSegment.head.left.frst
-                        , cnt = 3
-                        }
+rearHelp : SegmentContent x -> Maybe x
+rearHelp sgm =
+    case sgm.next of
+        Segment next ->
+            if sgm.head.left.cnt == 0 then
+                case sgm.tail of
+                    YCons y ->
+                        let
+                            maybeRear =
+                                yellowRear y
+                        in
+                        case maybeRear of
+                            Nothing ->
+                                rearHelp next
 
-                toBeFixed =
-                    { head =
-                        { left = newHeadLeft
-                        , right = oldSegment.head.right
-                        }
-                    , tail = oldSegment.tail
-                    , nextSegment = oldSegment.nextSegment
-                    }
-            in
-            if newHeadLeft.cnt == 3 then
-                Queue (fixRedTail toBeFixed)
+                            _ ->
+                                maybeRear
 
-            else if newHeadLeft.cnt <= 1 && toBeFixed.head.right.cnt >= 2 then
-                Queue (Segment toBeFixed)
+                    YNil () ->
+                        rearHelp next
 
             else
-                case toBeFixed.nextSegment of
-                    Segment next ->
-                        if next.head.left.cnt == 3 || next.head.right.cnt == 0 then
-                            Queue
-                                (Segment
-                                    { head = toBeFixed.head
-                                    , tail = toBeFixed.tail
-                                    , nextSegment =
-                                        fixRedTail next
-                                    }
-                                )
+                let
+                    targetNode =
+                        if sgm.head.left.cnt == 1 then
+                            sgm.head.left.frst
+
+                        else if sgm.head.left.cnt == 2 then
+                            sgm.head.left.scnd
 
                         else
-                            Queue (Segment toBeFixed)
+                            sgm.head.left.thrd
+                in
+                leftMostInNode targetNode
 
-                    Bottom _ ->
-                        Queue (Segment toBeFixed)
-
-        Bottom oldBottom ->
+        Bottom () ->
             let
-                newLayer =
-                    if oldBottom.right.cnt == 0 then
-                        { left = emptyColumn
-                        , right =
-                            if oldBottom.left.cnt == 0 then
-                                { thrd = none
-                                , scnd = none
-                                , frst = Leaf x
-                                , cnt = 1
-                                }
+                targetNode =
+                    if sgm.head.left.cnt == 3 then
+                        sgm.head.left.thrd
 
-                            else if oldBottom.left.cnt == 1 then
-                                { thrd = none
-                                , scnd = Leaf x
-                                , frst = oldBottom.left.frst
-                                , cnt = 2
-                                }
+                    else if sgm.head.left.cnt == 2 then
+                        sgm.head.left.scnd
 
-                            else
-                                { thrd = Leaf x
-                                , scnd = oldBottom.left.scnd
-                                , frst = oldBottom.left.frst
-                                , cnt = 3
-                                }
-                        }
+                    else if sgm.head.left.cnt == 1 then
+                        sgm.head.left.frst
 
-                    else if oldBottom.right.cnt == 1 then
-                        if oldBottom.left.cnt == 0 then
-                            { left = emptyColumn
-                            , right =
-                                { thrd = none
-                                , scnd = Leaf x
-                                , frst = oldBottom.right.frst
-                                , cnt = 2
-                                }
-                            }
+                    else if sgm.head.right.cnt == 3 then
+                        sgm.head.right.thrd
 
-                        else if oldBottom.left.cnt == 1 then
-                            { left = emptyColumn
-                            , right =
-                                { thrd = Leaf x
-                                , scnd = oldBottom.left.frst
-                                , frst = oldBottom.right.frst
-                                , cnt = 3
-                                }
-                            }
-
-                        else
-                            { left =
-                                { thrd = none
-                                , scnd = none
-                                , frst = Leaf x
-                                , cnt = 1
-                                }
-                            , right =
-                                { thrd = oldBottom.left.scnd
-                                , scnd = oldBottom.left.frst
-                                , frst = oldBottom.right.frst
-                                , cnt = 3
-                                }
-                            }
-
-                    else if oldBottom.right.cnt == 2 then
-                        if oldBottom.left.cnt == 0 then
-                            { left = emptyColumn
-                            , right =
-                                { thrd = Leaf x
-                                , scnd = oldBottom.right.scnd
-                                , frst = oldBottom.right.frst
-                                , cnt = 3
-                                }
-                            }
-
-                        else if oldBottom.left.cnt == 1 then
-                            { left =
-                                { thrd = none
-                                , scnd = none
-                                , frst = Leaf x
-                                , cnt = 1
-                                }
-                            , right =
-                                { thrd = oldBottom.left.frst
-                                , scnd = oldBottom.right.scnd
-                                , frst = oldBottom.right.frst
-                                , cnt = 3
-                                }
-                            }
-
-                        else
-                            { left =
-                                { thrd = none
-                                , scnd = Leaf x
-                                , frst = oldBottom.left.scnd
-                                , cnt = 2
-                                }
-                            , right =
-                                { thrd = oldBottom.left.frst
-                                , scnd = oldBottom.right.scnd
-                                , frst = oldBottom.right.frst
-                                , cnt = 3
-                                }
-                            }
+                    else if sgm.head.right.cnt == 2 then
+                        sgm.head.right.scnd
 
                     else
-                        { left =
-                            if oldBottom.left.cnt == 0 then
-                                { thrd = none
-                                , scnd = none
-                                , frst = Leaf x
-                                , cnt = 1
-                                }
-
-                            else if oldBottom.left.cnt == 1 then
-                                { thrd = none
-                                , scnd = Leaf x
-                                , frst = oldBottom.left.frst
-                                , cnt = 2
-                                }
-
-                            else
-                                { thrd = Leaf x
-                                , scnd = oldBottom.left.scnd
-                                , frst = oldBottom.left.frst
-                                , cnt = 3
-                                }
-                        , right = oldBottom.right
-                        }
-
-                newBottom =
-                    if newLayer.left.cnt == 3 && newLayer.right.cnt == 3 then
-                        Segment
-                            { head =
-                                { left = emptyColumn
-                                , right =
-                                    { thrd = none
-                                    , scnd = oldBottom.right.scnd
-                                    , frst = oldBottom.right.frst
-                                    , cnt = 2
-                                    }
-                                }
-                            , tail = ynil
-                            , nextSegment =
-                                Bottom
-                                    { left = emptyColumn
-                                    , right =
-                                        { thrd = none
-                                        , scnd =
-                                            Branch
-                                                { junior =
-                                                    newLayer.left.thrd
-                                                , senior =
-                                                    newLayer.left.scnd
-                                                }
-                                        , frst =
-                                            Branch
-                                                { junior =
-                                                    newLayer.left.frst
-                                                , senior =
-                                                    oldBottom.right.thrd
-                                                }
-                                        , cnt = 2
-                                        }
-                                    }
-                            }
-
-                    else
-                        Bottom newLayer
+                        sgm.head.right.frst
             in
-            Queue newBottom
+            leftMostInNode targetNode
+
+
+yellowRear : YellowContent x -> Maybe x
+yellowRear y =
+    if y.head.left.cnt == 0 then
+        case y.tail of
+            YCons nextY ->
+                yellowRear nextY
+
+            YNil () ->
+                Nothing
+
+    else
+        let
+            rearNode =
+                if y.head.left.cnt == 2 then
+                    y.head.left.scnd
+
+                else
+                    y.head.left.frst
+        in
+        leftMostInNode rearNode
+
+
+leftMostInNode : Node x -> Maybe x
+leftMostInNode n =
+    case n of
+        Branch b ->
+            leftMostInNode b.left
+
+        Leaf x ->
+            Just x
+
+        None () ->
+            Nothing
+
+
+type LengthProcess
+    = HeadLength
+    | YellowTailLength
+
+
+{-| Returns how many elements is contained in the queue. The time complexity is _O(log N)_.
+
+    empty
+        |> length
+    --> 0
+
+    empty
+        |> enqueue 1
+        |> enqueue 2
+        |> enqueue 3
+        |> dequeue
+        |> length
+    --> 2
+
+-}
+length : Queue x -> Int
+length (Queue sgm) =
+    lengthHelp HeadLength 1 0 emptyYellowContent sgm
+
+
+lengthHelp : LengthProcess -> Int -> Int -> YellowContent x -> SegmentContent x -> Int
+lengthHelp process base accm y sgm =
+    case process of
+        HeadLength ->
+            let
+                updatedAccm =
+                    (sgm.head.left.cnt + sgm.head.right.cnt)
+                        * base
+                        + accm
+            in
+            case sgm.tail of
+                YCons yy ->
+                    lengthHelp YellowTailLength
+                        (base * 2)
+                        updatedAccm
+                        yy
+                        sgm
+
+                YNil () ->
+                    case sgm.next of
+                        Segment next ->
+                            lengthHelp HeadLength
+                                (base * 2)
+                                updatedAccm
+                                y
+                                next
+
+                        Bottom () ->
+                            updatedAccm
+
+        YellowTailLength ->
+            let
+                updatedAccm =
+                    (y.head.left.cnt + y.head.right.cnt)
+                        * base
+                        + accm
+            in
+            case y.tail of
+                YCons yy ->
+                    lengthHelp YellowTailLength
+                        (base * 2)
+                        updatedAccm
+                        yy
+                        sgm
+
+                YNil () ->
+                    case sgm.next of
+                        Segment next ->
+                            lengthHelp HeadLength
+                                (base * 2)
+                                updatedAccm
+                                y
+                                next
+
+                        Bottom () ->
+                            -- impossible
+                            -1
 
 
 {-| Create queue from list.
@@ -933,7 +954,7 @@ The newest element comes head of the queue.
 -}
 fromListLIFO : List x -> Queue x
 fromListLIFO l =
-    fromListHelp l empty
+    List.foldl enqueue empty l
 
 
 {-| Create queue from list.
@@ -952,17 +973,7 @@ The oldest element of the list comes head of the queue.
 -}
 fromListFIFO : List x -> Queue x
 fromListFIFO l =
-    fromListHelp (List.reverse l) empty
-
-
-fromListHelp : List x -> Queue x -> Queue x
-fromListHelp l q =
-    case l of
-        h :: t ->
-            fromListHelp t (enqueue h q)
-
-        [] ->
-            q
+    List.foldr enqueue empty l
 
 
 {-| Convert a queue to List. The Last-In element in the queue will become the head of the returned list.
@@ -997,147 +1008,10 @@ toListFIFO q =
 
 
 toListHelp : Queue x -> List x -> List x
-toListHelp q l =
+toListHelp q soFar =
     case head q of
+        Just x ->
+            toListHelp (dequeue q) (x :: soFar)
+
         Nothing ->
-            l
-
-        Just h ->
-            toListHelp (dequeue q) (h :: l)
-
-
-{-| Returns how many elements is contained in the queue. The time complexity is _O(log N)_.
-
-    empty
-        |> length
-    --> 0
-
-    empty
-        |> enqueue 1
-        |> enqueue 2
-        |> enqueue 3
-        |> dequeue
-        |> length
-    --> 2
-
--}
-length : Queue x -> Int
-length (Queue segments) =
-    lengthHelp segments { currentWeight = 1, countedSoFar = 0 }
-
-
-lengthHelp : Segment x -> { currentWeight : Int, countedSoFar : Int } -> Int
-lengthHelp segments { currentWeight, countedSoFar } =
-    case segments of
-        Segment s ->
-            { countedSoFar =
-                countedSoFar
-                    + currentWeight
-                    * (s.head.left.cnt + s.head.right.cnt)
-            , currentWeight = currentWeight * 2
-            }
-                |> lengthHelpHelp s.tail
-                |> lengthHelp s.nextSegment
-
-        Bottom btm ->
-            countedSoFar
-                + currentWeight
-                * (btm.left.cnt + btm.right.cnt)
-
-
-lengthHelpHelp : YellowLayers x -> { currentWeight : Int, countedSoFar : Int } -> { currentWeight : Int, countedSoFar : Int }
-lengthHelpHelp yellowLayers ({ currentWeight, countedSoFar } as intermediate) =
-    case yellowLayers of
-        YCons { yhead, yrest } ->
-            lengthHelpHelp yrest
-                { countedSoFar =
-                    countedSoFar
-                        + currentWeight
-                        * (yhead.left.cnt + yhead.right.cnt)
-                , currentWeight = currentWeight * 2
-                }
-
-        _ ->
-            intermediate
-
-
-{-| Returns the newest element if exists, wrapped in `Maybe`.
-Worst-case time complexity of this operation is _O(log N)_.
-
-    empty
-        |> enqueue 100
-        |> enqueue 200
-        |> rear
-    --> Just 200
-
-    empty
-        |> enqueue 100
-        |> dequeue
-        |> rear
-    --> Nothing
-
--}
-rear : Queue x -> Maybe x
-rear (Queue segment) =
-    rearHelp segment
-
-
-rearHelp : Segment x -> Maybe x
-rearHelp segment =
-    case segment of
-        Segment s ->
-            if s.head.left.cnt == 0 then
-                case s.tail of
-                    YNil () ->
-                        rearHelp s.nextSegment
-
-                    YCons { yhead, yrest } ->
-                        { head = yhead
-                        , tail = yrest
-                        , nextSegment = s.nextSegment
-                        }
-                            |> Segment
-                            |> rearHelp
-
-            else
-                s.head.left
-                    |> takeColumnRearNode
-                    |> takeYoungestLeafInNode
-
-        Bottom btm ->
-            let
-                targetColumn =
-                    if btm.left.cnt == 0 then
-                        btm.right
-
-                    else
-                        btm.left
-            in
-            targetColumn
-                |> takeColumnRearNode
-                |> takeYoungestLeafInNode
-
-
-takeColumnRearNode : Column x -> Node x
-takeColumnRearNode { thrd, scnd, frst, cnt } =
-    if cnt == 3 then
-        thrd
-
-    else if cnt == 2 then
-        scnd
-
-    else
-        frst
-
-
-takeYoungestLeafInNode : Node x -> Maybe x
-takeYoungestLeafInNode n =
-    case n of
-        Branch { junior } ->
-            takeYoungestLeafInNode junior
-
-        Leaf x ->
-            Just x
-
-        None () ->
-            Nothing
+            soFar

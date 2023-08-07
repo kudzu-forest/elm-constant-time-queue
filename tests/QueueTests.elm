@@ -75,7 +75,7 @@ operationsFuzzer =
                         Fuzz.int
                             |> Fuzz.map Enqueue
             )
-        |> Fuzz.listOfLength 400
+        |> Fuzz.listOfLength 1024
         |> Fuzz.pair (Fuzz.list Fuzz.int)
 
 
