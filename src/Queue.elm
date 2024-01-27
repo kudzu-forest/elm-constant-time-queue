@@ -1,15 +1,15 @@
 module Queue exposing
     ( Queue
     , empty, fromListLIFO, fromListFIFO
-    , isEmpty, head, rear, length
+    , isEmpty, isEqualTo, head, rear, length
     , enqueue, dequeue
     , toListLIFO, toListFIFO
     )
 
-{-| One way queue with time-complexity of enqueueing and dequeueing O(1) even at worst case.
+{-| This module provides functionalities as one-way queue. The worst-case time complexity of `enqueue` and `dequeue` is _O(1)_.
 
 
-# Type
+# Types
 
 @docs Queue
 
@@ -21,10 +21,10 @@ module Queue exposing
 
 # Query
 
-@docs isEmpty, head, rear, length
+@docs isEmpty, isEqualTo, head, rear, length
 
 
-# Modification
+# Update
 
 @docs enqueue, dequeue
 
@@ -35,983 +35,1050 @@ module Queue exposing
 
 -}
 
-{- ABOUT IMPLEMENTATION
-    * Read the paper before reading this code.
-    * data structures are named as following diagram.
-
-            entrance(`enqueue`)     |                 exit(`head`)
-         -------↓ -------------------------------------↑-------
-            `thrd`(Leaf x)          |                 `frst`
-    `left`  `scnd`(Leaf x)       `Layer`              `scnd`  'right'
-   `Column` `frst`(Leaf x)          |                 `thrd` `Column`
-         -------↓ -------------------------------------↑-------
-            `thrd`<- `Branch` with  |                 `frst`
-            `scnd`       2 `Leaf`s  |                 `scnd`
-            `frst`                  |                 `thrd`
-         -------↓ -------------------------------------↑-------
-            `thrd`<- `Branch` with  |                 `frst`
-            `scnd`       4 `Leaf`s  |                 `scnd`
-            `frst`                  |                 `thrd`
-         -------↓ -------------------------------------↑-------
-                …                   |                  …
-                ↓                   |                  ↑
-                `thrd`→`scnd`→`frst`→`thrd`→`scnd`→`frst`
-                                 Bottom
-
-    * Each layer is colored with element counts according to the table below.
-        |left＼right|    0    |    1    |    2    |    3    |
-        |   ---:    |  :---:  |  :---:  |  :---:  |  :---:  |
-        |     0     |   Red   | Yellow  |  Green  |  Green  |
-        |     1     |   Red   | Yellow  |  Green  |  Green  |
-        |     2     |   Red   | Yellow  | Yellow  | Yellow  |
-        |     3     |   Red   |   Red   |   Red   |   Red   |
-
-    * Every red layer can be greenized in one operation
-        with the color of neiboring under layers possibly getting bad.
-        (See `fixOnlyLeft` function for example.)
-    * The stacking layers are further organized as `Segment`s.
-        Each `Segment` is composed of one heading red or green layer and
-        following zero or more yellow layers,
-        or single layer named Bottom.
--}
-{- PERFORMANCE NOTES
-   This module is intendet to be used as a low-level tool which is required to have stable and sufficiently good performance.
-   So the author paid full attention on run-time performance,
-   especially on following points.
-
-   * All custom types has exactly one data to benefit from "hidden class" generation in some JS engine.
-   * No `case` expression is used in `let` clause because that usage leads to generation of immediate-function like `var _v0 = (function(){...})()` in compiled JS code.
-   * All `if` expression compares literal integer in order not to call high-cost comparison function for elmish data structures.
-   * Some of the process is inlined to reduce JS function call.
--}
+import Bitwise
 
 
-type Node x
-    = None ()
-    | Leaf x
-    | Branch { left : Node x, right : Node x }
+type Element a
+    = Nil
+    | Leaf a
+    | Branch { young : Element a, old : Element a }
 
 
-type alias Column x =
-    { thrd : Node x
-    , scnd : Node x
-    , frst : Node x
-    , cnt : Int
+type alias GreenOrYellowContent a =
+    { p1 : Element a -- prefix
+    , p2 : Element a -- prefix
+    , pCnt : Int
+    , tail : YellowTail a
+    , next : Substack a
+    , sNew : Element a -- suffix
+    , sMid : Element a
+    , sOld : Element a
+    , sCnt : Int
     }
 
 
-type alias Layer x =
-    { left : Column x
-    , right : Column x
+type alias RedContent a =
+    { p1 : Element a
+    , p2 : Element a
+    , pCnt : Int
+    , child : GreenOrYellowContent a
+    , tail : YellowTail a
+    , next : Substack a
+    , sNew : Element a -- suffix
+    , sMid : Element a
+    , sOld : Element a
+    , sCnt : Int
     }
 
 
-type alias YellowContent x =
-    { head : Layer x, tail : YellowLayers x }
+type Substack a
+    = Green (GreenOrYellowContent a)
+    | Red (RedContent a)
+    | End
 
 
-type YellowLayers x
-    = YNil ()
-    | YCons (YellowContent x)
+type YellowTail a
+    = YCons (GreenOrYellowContent a)
+    | YNil
 
 
-type alias SegmentContent x =
-    { head : Layer x
-    , tail : YellowLayers x
-    , next : Segment x
-    }
-
-
-type Segment x
-    = Segment (SegmentContent x)
-    | Bottom ()
-
-
-{-| Representation of First-In, First-Out(FIFO) data structure.
+{-| Represents one-way queue for any contents.
 -}
-type Queue x
-    = Queue (SegmentContent x)
+type Queue a
+    = Queue (GreenOrYellowContent a)
 
 
-emptyNode : Node x
-emptyNode =
-    None ()
-
-
-emptyColumn : Column x
-emptyColumn =
-    Column emptyNode emptyNode emptyNode 0
-
-
-emptyLayer : Layer x
-emptyLayer =
-    Layer emptyColumn emptyColumn
-
-
-emptyYellowContent : YellowContent x
-emptyYellowContent =
-    { head = emptyLayer, tail = emptyYellowLayers }
-
-
-emptyYellowLayers : YellowLayers x
-emptyYellowLayers =
-    YNil ()
-
-
-bottom : Segment x
-bottom =
-    Bottom ()
-
-
-emptySegmentContent : SegmentContent x
-emptySegmentContent =
-    { head = emptyLayer
-    , tail = emptyYellowLayers
-    , next = bottom
+emptyGreen : GreenOrYellowContent a
+emptyGreen =
+    { p1 = Nil
+    , p2 = Nil
+    , pCnt = 0
+    , tail = YNil
+    , next = End
+    , sNew = Nil
+    , sMid = Nil
+    , sOld = Nil
+    , sCnt = 0
     }
 
 
-{-| Returns empty queue.
+{-| Represents queue with no element.
 
-    head empty == Nothing
+    empty |> isEmpty --> True
+
+    empty |> head --> Nothing
+
+    empty |> rear --> Nothing
 
 -}
-empty : Queue x
+empty : Queue a
 empty =
-    Queue emptySegmentContent
+    Queue emptyGreen
 
 
-fix : Layer x -> Layer x -> YellowLayers x -> Segment x -> SegmentContent x
-fix above below tail next =
-    case below.right.frst of
+fix : RedContent a -> GreenOrYellowContent a
+fix r =
+    let
+        p1 =
+            r.p1
+
+        p2 =
+            Nil
+
+        pCnt =
+            Bitwise.and 1 r.pCnt
+
+        cp1 =
+            if r.pCnt <= 1 then
+                r.child.p1
+
+            else if r.child.pCnt == 1 then
+                Nil
+
+            else
+                r.p2
+
+        cp2 =
+            if r.pCnt >= 2 && r.child.pCnt == 1 then
+                Branch { young = r.p2, old = r.child.p1 }
+
+            else
+                r.child.p2
+
+        cpCnt =
+            Bitwise.shiftRightBy 1 r.pCnt + r.child.pCnt
+
+        sCnt =
+            Bitwise.or 2 r.sCnt
+
+        csCnt =
+            Bitwise.shiftRightBy 1 r.sCnt + r.child.sCnt - 1
+
+        csNew =
+            if r.sCnt <= 1 then
+                Nil
+
+            else
+                r.child.sNew
+
+        csMid =
+            if r.sCnt <= 1 then
+                r.child.sNew
+
+            else
+                r.child.sMid
+
+        csOld =
+            if r.sCnt <= 1 then
+                r.child.sMid
+
+            else
+                r.child.sOld
+    in
+    case r.child.sOld of
         Branch b ->
             let
-                newAbove =
-                    { left =
-                        if above.left.cnt >= 2 then
-                            { thrd = emptyNode
-                            , scnd = emptyNode
-                            , frst = above.left.thrd
-                            , cnt = above.left.cnt - 2
-                            }
-
-                        else
-                            above.left
-                    , right =
-                        if above.right.cnt >= 2 then
-                            above.right
-
-                        else if above.right.cnt == 1 then
-                            { thrd = b.left
-                            , scnd = b.right
-                            , frst = above.right.frst
-                            , cnt = 3
-                            }
-
-                        else
-                            { thrd = emptyNode
-                            , scnd = b.left
-                            , frst = b.right
-                            , cnt = 2
-                            }
-                    }
-
-                downNode =
-                    Branch
-                        { left = above.left.scnd
-                        , right = above.left.frst
-                        }
-
-                newBelow =
-                    { left =
-                        if above.left.cnt >= 2 then
-                            if below.left.cnt == 2 then
-                                { thrd = downNode
-                                , scnd = below.left.scnd
-                                , frst = below.left.frst
-                                , cnt = 3
-                                }
-
-                            else if below.left.cnt == 1 then
-                                { thrd = emptyNode
-                                , scnd = downNode
-                                , frst = below.left.frst
-                                , cnt = 2
-                                }
-
-                            else
-                                { thrd = emptyNode
-                                , scnd = emptyNode
-                                , frst = downNode
-                                , cnt = 1
-                                }
-
-                        else
-                            below.left
-                    , right =
-                        if above.right.cnt >= 2 then
-                            below.right
-
-                        else
-                            { thrd = emptyNode
-                            , scnd = below.right.thrd
-                            , frst = below.right.scnd
-                            , cnt = below.right.cnt - 1
-                            }
-                    }
-            in
-            case next of
-                Segment _ ->
-                    if
-                        (newBelow.left.cnt == 3)
-                            || (newBelow.right.cnt == 0)
-                            || ((newBelow.left.cnt <= 1)
-                                    && (newBelow.right.cnt >= 2)
-                               )
-                    then
-                        { head = newAbove
-                        , tail = emptyYellowLayers
-                        , next =
-                            Segment
-                                { head = newBelow
-                                , tail = tail
-                                , next = next
-                                }
-                        }
+                sNew =
+                    if r.sCnt == 1 then
+                        b.young
 
                     else
-                        { head = newAbove
-                        , tail =
-                            YCons
-                                { head = newBelow
-                                , tail = tail
-                                }
-                        , next = next
-                        }
+                        r.sNew
 
-                Bottom () ->
-                    let
-                        btm =
-                            fixBottom newBelow
-                    in
-                    { head = newAbove
-                    , tail = emptyYellowLayers
-                    , next =
-                        if btm.head.right.cnt == 0 then
-                            bottom
+                sMid =
+                    if r.sCnt >= 2 then
+                        r.sMid
+
+                    else if r.sCnt == 1 then
+                        b.old
+
+                    else
+                        b.young
+
+                sOld =
+                    if r.sCnt >= 1 then
+                        r.sOld
+
+                    else
+                        b.old
+            in
+            if cpCnt /= 3 && csCnt /= 0 then
+                let
+                    newTail =
+                        if cpCnt <= 1 && csCnt >= 2 then
+                            YNil
 
                         else
-                            Segment btm
-                    }
+                            YCons
+                                { p1 = cp1
+                                , p2 = cp2
+                                , pCnt = cpCnt
+                                , tail = r.tail
+                                , next = End
+                                , sNew = csNew
+                                , sMid = csMid
+                                , sOld = csOld
+                                , sCnt = csCnt
+                                }
 
-        _ ->
-            emptySegmentContent
+                    newNext =
+                        if cpCnt <= 1 && csCnt >= 2 then
+                            Green
+                                { p1 = cp1
+                                , p2 = Nil
+                                , pCnt = cpCnt
+                                , tail = r.tail
+                                , next = r.next
+                                , sNew = csNew
+                                , sMid = csMid
+                                , sOld = csOld
+                                , sCnt = csCnt
+                                }
 
-
-fixBottom : Layer x -> SegmentContent x
-fixBottom btm =
-    case btm.right.cnt of
-        3 ->
-            if btm.left.cnt == 3 then
-                { head =
-                    { left = emptyColumn
-                    , right =
-                        { thrd = emptyNode
-                        , scnd = btm.right.scnd
-                        , frst = btm.right.frst
-                        , cnt = 2
-                        }
-                    }
-                , tail = emptyYellowLayers
-                , next =
-                    { head =
-                        { left = emptyColumn
-                        , right =
-                            { thrd = emptyNode
-                            , scnd =
-                                Branch
-                                    { left = btm.left.thrd
-                                    , right = btm.left.scnd
-                                    }
-                            , frst =
-                                Branch
-                                    { left = btm.left.frst
-                                    , right = btm.right.thrd
-                                    }
-                            , cnt = 2
-                            }
-                        }
-                    , tail = emptyYellowLayers
-                    , next = bottom
-                    }
-                        |> Segment
+                        else
+                            r.next
+                in
+                { p1 = p1
+                , p2 = p2
+                , pCnt = pCnt
+                , tail = newTail
+                , next = newNext
+                , sNew = sNew
+                , sMid = sMid
+                , sOld = sOld
+                , sCnt = sCnt
                 }
 
             else
-                { head = btm
-                , tail = emptyYellowLayers
-                , next = bottom
-                }
-
-        2 ->
-            { head =
-                { left =
-                    if btm.left.cnt <= 1 then
-                        emptyColumn
-
-                    else
-                        { thrd = emptyNode
-                        , scnd = btm.left.thrd
-                        , frst = btm.left.scnd
-                        , cnt = btm.left.cnt - 1
+                case r.tail of
+                    YCons y ->
+                        { p1 = p1
+                        , p2 = p2
+                        , pCnt = pCnt
+                        , tail = YNil
+                        , next =
+                            Red
+                                { p1 = cp1
+                                , p2 = cp2
+                                , pCnt = cpCnt
+                                , child = y
+                                , tail = y.tail
+                                , next = r.next
+                                , sNew = csNew
+                                , sMid = csMid
+                                , sOld = csOld
+                                , sCnt = csCnt
+                                }
+                        , sNew = sNew
+                        , sMid = sMid
+                        , sOld = sOld
+                        , sCnt = sCnt
                         }
-                , right =
-                    { thrd = btm.left.frst
-                    , scnd = btm.right.scnd
-                    , frst = btm.right.frst
-                    , cnt =
-                        if btm.left.cnt == 0 then
-                            2
 
-                        else
-                            3
-                    }
-                }
-            , tail = emptyYellowLayers
-            , next = bottom
-            }
+                    YNil ->
+                        case r.next of
+                            Green g ->
+                                { p1 = p1
+                                , p2 = p2
+                                , pCnt = pCnt
+                                , tail = YNil
+                                , next =
+                                    Red
+                                        { p1 = cp1
+                                        , p2 = cp2
+                                        , pCnt = cpCnt
+                                        , child = g
+                                        , tail = g.tail
+                                        , next = g.next
+                                        , sNew = csNew
+                                        , sMid = csMid
+                                        , sOld = csOld
+                                        , sCnt = csCnt
+                                        }
+                                , sNew = sNew
+                                , sMid = sMid
+                                , sOld = sOld
+                                , sCnt = sCnt
+                                }
 
-        1 ->
-            { head =
-                { left =
-                    if btm.left.cnt <= 2 then
-                        emptyColumn
+                            _ ->
+                                -- r.next must be End.
+                                let
+                                    newTail =
+                                        if cpCnt == 1 then
+                                            YCons
+                                                { p1 = Nil
+                                                , p2 = Nil
+                                                , pCnt = 0
+                                                , tail = YNil
+                                                , next = End
+                                                , sNew = Nil
+                                                , sMid = Nil
+                                                , sOld = cp1
+                                                , sCnt = 1
+                                                }
 
-                    else
-                        { thrd = emptyNode
-                        , scnd = emptyNode
-                        , frst = btm.left.scnd
-                        , cnt = btm.left.cnt - 2
-                        }
-                , right =
-                    { thrd = btm.left.scnd
-                    , scnd = btm.left.frst
-                    , frst = btm.right.frst
-                    , cnt =
-                        if btm.left.cnt >= 2 then
-                            3
+                                        else
+                                            YNil
+                                in
+                                if cpCnt <= 1 || csCnt >= 2 then
+                                    let
+                                        newNext =
+                                            if cpCnt <= 1 then
+                                                End
 
-                        else
-                            1 + btm.left.cnt
-                    }
-                }
-            , tail = emptyYellowLayers
-            , next = bottom
-            }
+                                            else
+                                                -- if csCnt >= 2 then
+                                                Green
+                                                    { p1 = cp1
+                                                    , p2 = Nil
+                                                    , pCnt = 1
+                                                    , tail =
+                                                        YCons
+                                                            { p1 = Nil
+                                                            , p2 = Nil
+                                                            , pCnt = 0
+                                                            , tail = YNil
+                                                            , next = End
+                                                            , sNew = Nil
+                                                            , sMid = Nil
+                                                            , sOld = cp2
+                                                            , sCnt = 1
+                                                            }
+                                                    , next = End
+                                                    , sNew = csNew
+                                                    , sMid = csMid
+                                                    , sOld = csOld
+                                                    , sCnt = csCnt
+                                                    }
+                                    in
+                                    { p1 = p1
+                                    , p2 = p2
+                                    , pCnt = pCnt
+                                    , tail = newTail
+                                    , next = newNext
+                                    , sNew = sNew
+                                    , sMid = sMid
+                                    , sOld = sOld
+                                    , sCnt = sCnt
+                                    }
+
+                                else
+                                    case cp2 of
+                                        Branch br ->
+                                            let
+                                                newNext =
+                                                    Green
+                                                        { p1 = cp1
+                                                        , p2 = Nil
+                                                        , pCnt = cpCnt - 2
+                                                        , tail = YNil
+                                                        , next = End
+                                                        , sNew =
+                                                            if csCnt == 1 then
+                                                                br.young
+
+                                                            else
+                                                                Nil
+                                                        , sMid =
+                                                            if csCnt == 1 then
+                                                                br.old
+
+                                                            else
+                                                                br.young
+                                                        , sOld =
+                                                            if csCnt == 1 then
+                                                                csOld
+
+                                                            else
+                                                                br.old
+                                                        , sCnt = csCnt + 2
+                                                        }
+                                            in
+                                            { p1 = p1
+                                            , p2 = p2
+                                            , pCnt = pCnt
+                                            , tail = newTail
+                                            , next = newNext
+                                            , sNew = sNew
+                                            , sMid = sMid
+                                            , sOld = sOld
+                                            , sCnt = sCnt
+                                            }
+
+                                        _ ->
+                                            --impossible
+                                            emptyGreen
 
         _ ->
-            { head =
-                { left =
-                    emptyColumn
-                , right =
-                    btm.left
-                }
-            , tail = emptyYellowLayers
-            , next = bottom
-            }
+            emptyGreen
 
 
-{-| Inject a new element into the rear side of the queue.
+{-| Returns a queue with the given element attached on the rear side.
 
     empty
-        |> enqueue 100
-        |> enqueue 200
-        |> head
-    --> Just 100
+        |> enqueue "e"
+        -- first in
+        |> enqueue "l"
+        |> enqueue "m"
+        |> toListFIFO
+            -->
+            [ "e", "l", "m" ]
 
 -}
-enqueue : x -> Queue x -> Queue x
-enqueue x (Queue old) =
+enqueue : a -> Queue a -> Queue a
+enqueue a (Queue q) =
     let
         l =
-            old.head.left
-
-        newLeftCnt =
-            l.cnt + 1
-
-        newLeft =
-            if newLeftCnt == 3 then
-                { thrd = Leaf x
-                , scnd = l.scnd
-                , frst = l.frst
-                , cnt = 3
-                }
-
-            else if newLeftCnt == 2 then
-                { thrd = emptyNode
-                , scnd = Leaf x
-                , frst = l.frst
-                , cnt = 2
-                }
-
-            else
-                { thrd = emptyNode
-                , scnd = emptyNode
-                , frst = Leaf x
-                , cnt = 1
-                }
-
-        newHead =
-            { left = newLeft
-            , right = old.head.right
-            }
+            Leaf a
     in
-    if newLeftCnt == 1 then
-        { head = newHead
-        , tail = old.tail
-        , next = old.next
+    if q.pCnt == 0 then
+        { p1 = l
+        , p2 = Nil
+        , pCnt = 1
+        , tail = q.tail
+        , next = q.next
+        , sNew = q.sNew
+        , sMid = q.sMid
+        , sOld = q.sOld
+        , sCnt = q.sCnt
         }
             |> Queue
 
-    else if newLeftCnt == 3 then
-        case old.next of
-            Segment next ->
-                case old.tail of
-                    YCons y ->
-                        fix
-                            newHead
-                            y.head
-                            y.tail
-                            old.next
-                            |> Queue
-
-                    YNil () ->
-                        fix
-                            newHead
-                            next.head
-                            next.tail
-                            next.next
-                            |> Queue
-
-            Bottom () ->
-                Queue (fixBottom newHead)
-
-    else
-        case old.next of
-            Segment next ->
-                if
-                    (next.head.left.cnt == 3)
-                        || (next.head.right.cnt == 0)
-                then
-                    case next.tail of
-                        YCons y ->
-                            let
-                                fixed =
-                                    fix
-                                        next.head
-                                        y.head
-                                        y.tail
-                                        next.next
-                            in
-                            Queue
-                                { head = newHead
-                                , tail = old.tail
-                                , next = Segment fixed
-                                }
-
-                        YNil () ->
-                            case next.next of
-                                Segment nextnext ->
-                                    let
-                                        fixed =
-                                            fix
-                                                next.head
-                                                nextnext.head
-                                                nextnext.tail
-                                                nextnext.next
-                                    in
-                                    Queue
-                                        { head = newHead
-                                        , tail = old.tail
-                                        , next = Segment fixed
-                                        }
-
-                                Bottom () ->
-                                    Queue
-                                        { head = newHead
-                                        , tail = old.tail
-                                        , next = old.next
-                                        }
-
-                else
-                    Queue
-                        { head = newHead
-                        , tail = old.tail
-                        , next = old.next
-                        }
-
-            Bottom () ->
-                Queue (fixBottom newHead)
-
-
-{-| Returns queue without the oldest element of the given queue.
-
-    empty
-        |> enqueue "e"
-        |> enqueue "l"
-        |> enqueue "m"
-        |> enqueue "i"
-        |> enqueue "s"
-        |> enqueue "h"
-        |> dequeue
-        |> head
-    --> Just "l"
-
--}
-dequeue : Queue x -> Queue x
-dequeue (Queue old) =
-    if old.head.right.cnt == 0 then
-        if old.head.left.cnt == 0 then
-            empty
-
-        else
-            Queue (fixBottom old.head)
-                |> dequeue
-
-    else
+    else if q.pCnt == 1 then
         let
-            r =
-                old.head.right
-
-            newRightCnt =
-                r.cnt - 1
-
-            newRight =
-                if newRightCnt == 0 then
-                    emptyColumn
-
-                else
-                    { thrd = emptyNode
-                    , scnd = r.thrd
-                    , frst = r.scnd
-                    , cnt = newRightCnt
-                    }
-
-            newHead =
-                { left = old.head.left
-                , right = newRight
-                }
+            p2 =
+                Branch { young = l, old = q.p1 }
         in
-        if newRightCnt == 2 then
-            Queue
-                { head = newHead
-                , tail = old.tail
-                , next = old.next
+        case q.next of
+            Red r ->
+                { p1 = Nil
+                , p2 = p2
+                , pCnt = 2
+                , tail = q.tail
+                , next = Green (fix r)
+                , sNew = q.sNew
+                , sMid = q.sMid
+                , sOld = q.sOld
+                , sCnt = q.sCnt
                 }
+                    |> Queue
 
-        else if newRightCnt == 0 then
-            case old.next of
-                Segment next ->
-                    case old.tail of
-                        YCons y ->
-                            fix
-                                newHead
-                                y.head
-                                y.tail
-                                old.next
-                                |> Queue
+            _ ->
+                { p1 = Nil
+                , p2 = p2
+                , pCnt = 2
+                , tail = q.tail
+                , next = q.next
+                , sNew = q.sNew
+                , sMid = q.sMid
+                , sOld = q.sOld
+                , sCnt = q.sCnt
+                }
+                    |> Queue
 
-                        YNil () ->
-                            fix
-                                newHead
-                                next.head
-                                next.tail
-                                next.next
-                                |> Queue
+    else
+        case q.tail of
+            YCons y ->
+                fix
+                    { p1 = Leaf a
+                    , p2 = q.p2
+                    , pCnt = 3
+                    , child = y
+                    , tail = y.tail
+                    , next = q.next
+                    , sNew = q.sNew
+                    , sMid = q.sMid
+                    , sOld = q.sOld
+                    , sCnt = q.sCnt
+                    }
+                    |> Queue
 
-                Bottom () ->
-                    Queue (fixBottom newHead)
-
-        else
-            case old.next of
-                Segment next ->
-                    if
-                        (next.head.left.cnt == 3)
-                            || (next.head.right.cnt == 0)
-                    then
-                        case next.tail of
-                            YCons y ->
-                                let
-                                    fixed =
-                                        fix
-                                            next.head
-                                            y.head
-                                            y.tail
-                                            next.next
-                                in
-                                Queue
-                                    { head = newHead
-                                    , tail = old.tail
-                                    , next = Segment fixed
-                                    }
-
-                            YNil () ->
-                                case next.next of
-                                    Segment nextnext ->
-                                        let
-                                            fixed =
-                                                fix
-                                                    next.head
-                                                    nextnext.head
-                                                    nextnext.tail
-                                                    nextnext.next
-                                        in
-                                        Queue
-                                            { head = newHead
-                                            , tail = old.tail
-                                            , next = Segment fixed
-                                            }
-
-                                    Bottom () ->
-                                        Queue
-                                            { head = newHead
-                                            , tail = old.tail
-                                            , next = old.next
-                                            }
-
-                    else
-                        Queue
-                            { head = newHead
-                            , tail = old.tail
-                            , next = old.next
+            YNil ->
+                case q.next of
+                    Green g ->
+                        fix
+                            { p1 = l
+                            , p2 = q.p2
+                            , pCnt = 3
+                            , child = g
+                            , tail = g.tail
+                            , next = g.next
+                            , sNew = q.sNew
+                            , sMid = q.sMid
+                            , sOld = q.sOld
+                            , sCnt = q.sCnt
                             }
+                            |> Queue
 
-                Bottom () ->
-                    Queue (fixBottom newHead)
+                    _ ->
+                        -- q.next must be End
+                        if q.sCnt <= 1 then
+                            case q.p2 of
+                                Branch br ->
+                                    (if q.sCnt == 1 then
+                                        { p1 = l
+                                        , p2 = Nil
+                                        , pCnt = 1
+                                        , tail = YNil
+                                        , next = End
+                                        , sNew = br.young
+                                        , sMid = br.old
+                                        , sOld = q.sOld
+                                        , sCnt = 3
+                                        }
 
+                                     else
+                                        { p1 = l
+                                        , p2 = Nil
+                                        , pCnt = 1
+                                        , tail = YNil
+                                        , next = End
+                                        , sNew = Nil
+                                        , sMid = br.young
+                                        , sOld = br.old
+                                        , sCnt = 2
+                                        }
+                                    )
+                                        |> Queue
 
-{-| Returns `True` if the argument has no element.
-
-    empty
-        |> enqueue "a"
-        |> isEmpty
-    --> False
-
-    empty
-        |> enqueue "a"
-        |> dequeue
-        |> isEmpty
-    --> True
-
--}
-isEmpty : Queue x -> Bool
-isEmpty (Queue sgm) =
-    (sgm.head.right.cnt == 0)
-        && (sgm.head.left.cnt == 0)
-
-
-{-| Returns the oldest element injected in the queue wrapped in `Maybe`.
-
-    empty
-        |> head
-    --> Nothing
-
-    empty
-        |> enqueue "e"
-        |> enqueue "l"
-        |> enqueue "m"
-        |> head
-    --> Just "e"
-
--}
-head : Queue x -> Maybe x
-head (Queue sgm) =
-    case sgm.head.right.frst of
-        Leaf x ->
-            Just x
-
-        _ ->
-            case sgm.head.left.frst of
-                Leaf x ->
-                    Just x
-
-                _ ->
-                    Nothing
-
-
-{-| Returns the newest element if exists, wrapped in `Maybe`.
-Worst-case time complexity of this operation is _O(log N)_.
-
-    empty
-        |> enqueue 100
-        |> enqueue 200
-        |> rear
-    --> Just 200
-
-    empty
-        |> enqueue 100
-        |> dequeue
-        |> rear
-    --> Nothing
-
--}
-rear : Queue x -> Maybe x
-rear (Queue sgm) =
-    rearHelp sgm
-
-
-rearHelp : SegmentContent x -> Maybe x
-rearHelp sgm =
-    case sgm.next of
-        Segment next ->
-            if sgm.head.left.cnt == 0 then
-                case sgm.tail of
-                    YCons y ->
-                        let
-                            maybeRear =
-                                yellowRear y
-                        in
-                        case maybeRear of
-                            Nothing ->
-                                rearHelp next
-
-                            _ ->
-                                maybeRear
-
-                    YNil () ->
-                        rearHelp next
-
-            else
-                let
-                    targetNode =
-                        if sgm.head.left.cnt == 1 then
-                            sgm.head.left.frst
-
-                        else if sgm.head.left.cnt == 2 then
-                            sgm.head.left.scnd
+                                _ ->
+                                    --impossible
+                                    empty
 
                         else
-                            sgm.head.left.thrd
-                in
-                leftMostInNode targetNode
-
-        Bottom () ->
-            let
-                targetNode =
-                    if sgm.head.left.cnt == 3 then
-                        sgm.head.left.thrd
-
-                    else if sgm.head.left.cnt == 2 then
-                        sgm.head.left.scnd
-
-                    else if sgm.head.left.cnt == 1 then
-                        sgm.head.left.frst
-
-                    else if sgm.head.right.cnt == 3 then
-                        sgm.head.right.thrd
-
-                    else if sgm.head.right.cnt == 2 then
-                        sgm.head.right.scnd
-
-                    else
-                        sgm.head.right.frst
-            in
-            leftMostInNode targetNode
+                            { p1 = l
+                            , p2 = Nil
+                            , pCnt = 1
+                            , tail =
+                                YCons
+                                    { p1 = Nil
+                                    , p2 = Nil
+                                    , pCnt = 0
+                                    , tail = YNil
+                                    , next = End
+                                    , sNew = Nil
+                                    , sMid = Nil
+                                    , sOld = q.p2
+                                    , sCnt = 1
+                                    }
+                            , next = End
+                            , sNew = q.sNew
+                            , sMid = q.sMid
+                            , sOld = q.sOld
+                            , sCnt = q.sCnt
+                            }
+                                |> Queue
 
 
-yellowRear : YellowContent x -> Maybe x
-yellowRear y =
-    if y.head.left.cnt == 0 then
-        case y.tail of
-            YCons nextY ->
-                yellowRear nextY
+{-| Returns a queue with the oldest element removed.
 
-            YNil () ->
-                Nothing
+    intermediateQueue =
+        empty
+            |> enqueue "e" -- this will be removed
+            |> enqueue "l" -- first-in element in the final queue.
+            |> enqueue "m"
+
+    finalQueue =
+        dequeue intermediateQueue
+
+    finalQueue
+        |> toListFIFO -->
+            [ "l"
+            , "m"
+            ]
+
+-}
+dequeue : Queue a -> Queue a
+dequeue (Queue q) =
+    if q.sCnt == 3 then
+        Queue
+            { p1 = q.p1
+            , p2 = q.p2
+            , pCnt = q.pCnt
+            , tail = q.tail
+            , next = q.next
+            , sNew = Nil
+            , sMid = q.sNew
+            , sOld = q.sMid
+            , sCnt = 2
+            }
+
+    else if q.sCnt == 2 then
+        case q.next of
+            Red r ->
+                Queue
+                    { p1 = q.p1
+                    , p2 = q.p2
+                    , pCnt = q.pCnt
+                    , tail = q.tail
+                    , next = Green (fix r)
+                    , sNew = Nil
+                    , sMid = Nil
+                    , sOld = q.sMid
+                    , sCnt = 1
+                    }
+
+            _ ->
+                Queue
+                    { p1 = q.p1
+                    , p2 = q.p2
+                    , pCnt = q.pCnt
+                    , tail = q.tail
+                    , next = q.next
+                    , sNew = Nil
+                    , sMid = Nil
+                    , sOld = q.sMid
+                    , sCnt = 1
+                    }
+
+    else if q.sCnt == 1 then
+        case q.tail of
+            YCons y ->
+                fix
+                    { p1 = q.p1
+                    , p2 = q.p2
+                    , pCnt = q.pCnt
+                    , child = y
+                    , tail = y.tail
+                    , next = q.next
+                    , sNew = Nil
+                    , sMid = Nil
+                    , sOld = Nil
+                    , sCnt = 0
+                    }
+                    |> Queue
+
+            YNil ->
+                case q.next of
+                    Green g ->
+                        fix
+                            { p1 = q.p1
+                            , p2 = q.p2
+                            , pCnt = q.pCnt
+                            , child = g
+                            , tail = g.tail
+                            , next = g.next
+                            , sNew = Nil
+                            , sMid = Nil
+                            , sOld = Nil
+                            , sCnt = 0
+                            }
+                            |> Queue
+
+                    _ ->
+                        { p1 = q.p1
+                        , p2 = q.p2
+                        , pCnt = q.pCnt
+                        , tail = YNil
+                        , next = End
+                        , sNew = Nil
+                        , sMid = Nil
+                        , sOld = Nil
+                        , sCnt = 0
+                        }
+                            |> Queue
 
     else
-        let
-            rearNode =
-                if y.head.left.cnt == 2 then
-                    y.head.left.scnd
+        case q.p2 of
+            Branch br ->
+                { p1 = Nil
+                , p2 = Nil
+                , pCnt = 0
+                , tail = YNil
+                , next = End
+                , sNew = Nil
+                , sMid = Nil
+                , sOld = br.young
+                , sCnt = 1
+                }
+                    |> Queue
 
-                else
-                    y.head.left.frst
-        in
-        leftMostInNode rearNode
+            _ ->
+                empty
 
 
-leftMostInNode : Node x -> Maybe x
-leftMostInNode n =
-    case n of
+{-| Returns the oldest element in the queue wrapped in `Maybe`. Takes _O(1)_ time.
+
+    queue : Queue String
+    queue =
+        empty
+            |> enqueue "e"
+            |> enqueue "l"
+            |> enqueue "m"
+
+    head queue --> Just "e"
+
+    head empty --> Nothing
+
+-}
+head : Queue a -> Maybe a
+head (Queue q) =
+    case q.sOld of
+        Leaf a ->
+            Just a
+
+        _ ->
+            case q.p2 of
+                Branch b ->
+                    case b.old of
+                        Leaf a ->
+                            Just a
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    case q.p1 of
+                        Leaf a ->
+                            Just a
+
+                        _ ->
+                            Nothing
+
+
+{-| Returns the newest element in the queue wrapped in `Maybe`. Takes _O(log_n)\_ time at worst case.
+
+    queue : Queue String
+    queue =
+        empty
+            |> enqueue "e"
+            |> enqueue "l"
+            |> enqueue "m"
+
+    rear queue --> Just "m"
+
+    rear empty --> Nothing
+
+-}
+rear : Queue a -> Maybe a
+rear (Queue q) =
+    rearHelp
+        { p1 = q.p1
+        , p2 = q.p2
+        , p3 = Nil
+        , p4 = Nil
+        , tail = q.tail
+        , next = q.next
+        , sNew = q.sNew
+        , sMid = q.sMid
+        , sOld = q.sOld
+        }
+
+
+rearHelp :
+    { p1 : Element a
+    , p2 : Element a
+    , p3 : Element a
+    , p4 : Element a
+    , tail : YellowTail a
+    , next : Substack a
+    , sNew : Element a
+    , sMid : Element a
+    , sOld : Element a
+    }
+    -> Maybe a
+rearHelp o =
+    case o.p1 of
+        Nil ->
+            case o.p2 of
+                Nil ->
+                    case o.p3 of
+                        Nil ->
+                            case o.p4 of
+                                Nil ->
+                                    case o.tail of
+                                        YNil ->
+                                            case o.next of
+                                                End ->
+                                                    case o.sNew of
+                                                        Nil ->
+                                                            case o.sMid of
+                                                                Nil ->
+                                                                    getYoungestInElement o.sOld
+
+                                                                _ ->
+                                                                    getYoungestInElement o.sMid
+
+                                                        _ ->
+                                                            getYoungestInElement o.sNew
+
+                                                Green g ->
+                                                    rearHelp
+                                                        { p1 = g.p1
+                                                        , p2 = g.p2
+                                                        , p3 = Nil
+                                                        , p4 = Nil
+                                                        , tail = g.tail
+                                                        , next = g.next
+                                                        , sNew = g.sNew
+                                                        , sMid = g.sMid
+                                                        , sOld = g.sOld
+                                                        }
+
+                                                Red r ->
+                                                    rearHelp
+                                                        { p1 = r.p1
+                                                        , p2 = r.p2
+                                                        , p3 = r.child.p1
+                                                        , p4 = r.child.p2
+                                                        , tail = r.tail
+                                                        , next = r.next
+                                                        , sNew = r.child.sNew
+                                                        , sMid = r.child.sMid
+                                                        , sOld = r.child.sOld
+                                                        }
+
+                                        YCons y ->
+                                            rearHelp
+                                                { p1 = y.p1
+                                                , p2 = y.p2
+                                                , p3 = Nil
+                                                , p4 = Nil
+                                                , tail = y.tail
+                                                , next = o.next
+                                                , sNew = y.sNew
+                                                , sMid = y.sMid
+                                                , sOld = y.sOld
+                                                }
+
+                                _ ->
+                                    getYoungestInElement o.p4
+
+                        _ ->
+                            getYoungestInElement o.p3
+
+                _ ->
+                    getYoungestInElement o.p2
+
+        _ ->
+            getYoungestInElement o.p1
+
+
+getYoungestInElement : Element a -> Maybe a
+getYoungestInElement e =
+    case e of
         Branch b ->
-            leftMostInNode b.left
+            getYoungestInElement b.young
 
-        Leaf x ->
-            Just x
+        Leaf a ->
+            Just a
 
-        None () ->
+        Nil ->
             Nothing
 
 
-type LengthProcess
-    = HeadLength
-    | YellowTailLength
-
-
-{-| Returns how many elements is contained in the queue. The time complexity is _O(log N)_.
+{-| Returns `True` if and only if the queue has no element.
 
     empty
-        |> length
-    --> 0
+        |> isEmpty
+            -->
+            True
 
     empty
-        |> enqueue 1
-        |> enqueue 2
-        |> enqueue 3
-        |> dequeue
-        |> length
-    --> 2
+        |> enqueue "test"
+        |> isEmpty
+            -->
+            False
 
 -}
-length : Queue x -> Int
-length (Queue sgm) =
-    lengthHelp HeadLength 1 0 emptyYellowContent sgm
-
-
-lengthHelp : LengthProcess -> Int -> Int -> YellowContent x -> SegmentContent x -> Int
-lengthHelp process base accm y sgm =
-    case process of
-        HeadLength ->
-            let
-                updatedAccm =
-                    (sgm.head.left.cnt + sgm.head.right.cnt)
-                        * base
-                        + accm
-            in
-            case sgm.tail of
-                YCons yy ->
-                    lengthHelp YellowTailLength
-                        (base * 2)
-                        updatedAccm
-                        yy
-                        sgm
-
-                YNil () ->
-                    case sgm.next of
-                        Segment next ->
-                            lengthHelp HeadLength
-                                (base * 2)
-                                updatedAccm
-                                y
-                                next
-
-                        Bottom () ->
-                            updatedAccm
-
-        YellowTailLength ->
-            let
-                updatedAccm =
-                    (y.head.left.cnt + y.head.right.cnt)
-                        * base
-                        + accm
-            in
-            case y.tail of
-                YCons yy ->
-                    lengthHelp YellowTailLength
-                        (base * 2)
-                        updatedAccm
-                        yy
-                        sgm
-
-                YNil () ->
-                    case sgm.next of
-                        Segment next ->
-                            lengthHelp HeadLength
-                                (base * 2)
-                                updatedAccm
-                                y
-                                next
-
-                        Bottom () ->
-                            -- impossible
-                            -1
-
-
-{-| Create queue from list.
-The newest element comes head of the queue.
-
-    [ "H" -- The Last-In element is "H"
-    , "e"
-    , "l"
-    , "l"
-    , "o"
-    ]
-        |> fromListLIFO
-        |> head
-    --> Just "H"
-
--}
-fromListLIFO : List x -> Queue x
-fromListLIFO l =
-    List.foldl enqueue empty l
-
-
-{-| Create queue from list.
-The oldest element of the list comes head of the queue.
-
-    []
-        |> (::) "H" -- The First-In element is "H"
-        |> (::) "e"
-        |> (::) "l"
-        |> (::) "l"
-        |> (::) "o"
-        |> fromListFIFO
-        |> head
-    --> Just "H"
-
--}
-fromListFIFO : List x -> Queue x
-fromListFIFO l =
-    List.foldr enqueue empty l
-
-
-{-| Convert a queue to List. The Last-In element in the queue will become the head of the returned list.
-
-    empty
-        |> enqueue 100
-        |> enqueue 200
-        |> enqueue 300 -- The Last-In element is 300
-        |> toListLIFO
-    --> [300,200,100]
-
--}
-toListLIFO : Queue x -> List x
-toListLIFO q =
-    toListHelp q []
-
-
-{-| Convert a queue to List. The First-In element in the queue will become the head of the returned list.
-
-    empty
-        |> enqueue 100 -- The First-In element is 100
-        |> enqueue 200
-        |> enqueue 300
-        |> toListFIFO
-    --> [100,200,300]
-
--}
-toListFIFO : Queue x -> List x
-toListFIFO q =
-    toListHelp q []
-        |> List.reverse
-
-
-toListHelp : Queue x -> List x -> List x
-toListHelp q soFar =
+isEmpty : Queue a -> Bool
+isEmpty q =
     case head q of
-        Just x ->
-            toListHelp (dequeue q) (x :: soFar)
+        Nothing ->
+            True
+
+        _ ->
+            False
+
+
+{-| Converts a `List` to a `Queue` in a way that last-in element in the list becomes first-out element in the queue.
+
+    list : List String
+    list =
+        []
+            |> (::) "m"
+            |> (::) "l"
+            |> (::) "e" -- Here is last-in element.
+
+    queue : Queue String
+    queue =
+        fromListLIFO list
+
+    head queue --> Just "e"
+
+    rear queue --> Just "m"
+
+-}
+fromListLIFO : List a -> Queue a
+fromListLIFO l =
+    fromListLIFOHelp l empty
+
+
+fromListLIFOHelp : List a -> Queue a -> Queue a
+fromListLIFOHelp l sofar =
+    case l of
+        [] ->
+            sofar
+
+        h :: t ->
+            fromListLIFOHelp t (enqueue h sofar)
+
+
+{-| Converts a `List` to a `Queue` in a way that first-in element in the list becomes first-out element in the queue.
+
+    list : List String
+    list =
+        []
+            |> (::) "m" -- Here is first-in element.
+            |> (::) "l"
+            |> (::) "e"
+
+    queue : Queue String
+    queue =
+        fromListFIFO list
+
+    head queue --> Just "m"
+
+    rear queue --> Just "e"
+
+-}
+fromListFIFO : List a -> Queue a
+fromListFIFO l =
+    fromListLIFOHelp (List.reverse l) empty
+
+
+{-| Converts a `Queue` to a `List` in a way that last-in element in the queue becomes first-out element in the list.
+
+    queue : Queue String
+    queue =
+        empty
+            |> enqueue "e"
+            |> enqueue "l"
+            |> enqueue "m" --Here is last-in element.
+
+    toListLIFO queue --> ["m","l","e"]
+
+-}
+toListLIFO : Queue a -> List a
+toListLIFO q =
+    toListLIFOHelp q []
+
+
+toListLIFOHelp : Queue a -> List a -> List a
+toListLIFOHelp q sofar =
+    case head q of
+        Just h ->
+            toListLIFOHelp (dequeue q) (h :: sofar)
 
         Nothing ->
-            soFar
+            sofar
+
+
+{-| Converts a `Queue` to a `List` in a way that first-in element in the queue becomes first-out element in the list.
+
+    queue : Queue String
+    queue =
+        empty
+            |> enqueue "e" --Here is last-in element.
+            |> enqueue "l"
+            |> enqueue "m"
+
+    toListFIFO queue --> ["e","l","m"]
+
+-}
+toListFIFO : Queue a -> List a
+toListFIFO q =
+    List.reverse (toListLIFOHelp q [])
+
+
+{-| Compare the contents and the order in two queues. Returns `True` if and only if all the elements contained and the orders are the same.
+Note that comparison in `==` may return false even if the contents are the same, because there is some redunduncy in the inner structure of the queue. Takes _O(n)_ time.
+
+    q1 : Queue String
+    q1 =
+        empty
+            |> enqueue "e"
+            |> enqueue "l"
+            |> enqueue "m"
+            |> dequeue
+
+    q2 : Queue String
+    q2 =
+        empty
+            |> enqueue "e"
+            |> dequeue
+            |> enqueue "l"
+            |> enqueue "m"
+
+    q3 : Queue String
+    q3 =
+        empty
+            |> enqueue "m"
+            |> enqueue "l"
+            |> enqueue "e"
+            |> dequeue
+
+    q1 |> isEqualTo q2 --> True
+
+    q1 |> isEqualTo q3 --> False
+
+-}
+isEqualTo : Queue a -> Queue a -> Bool
+isEqualTo q1 q2 =
+    case head q1 of
+        Just h1 ->
+            case head q2 of
+                Just h2 ->
+                    if h1 == h2 then
+                        isEqualTo
+                            (dequeue q1)
+                            (dequeue q2)
+
+                    else
+                        False
+
+                Nothing ->
+                    False
+
+        Nothing ->
+            case head q2 of
+                Just _ ->
+                    False
+
+                Nothing ->
+                    True
+
+
+{-| Returns how many elements the Queue has. Takes _O(log_n)\_ time.
+-}
+length : Queue a -> Int
+length (Queue q) =
+    lengthHelp 2 (q.pCnt + q.sCnt) q.tail q.next
+
+
+lengthHelp : Int -> Int -> YellowTail a -> Substack a -> Int
+lengthHelp weight sofar tail next =
+    case tail of
+        YCons y ->
+            lengthHelp (Bitwise.shiftLeftBy 1 weight)
+                ((y.pCnt + y.sCnt) * weight + sofar)
+                y.tail
+                next
+
+        YNil ->
+            case next of
+                Green g ->
+                    lengthHelp (Bitwise.shiftLeftBy 1 weight)
+                        ((g.pCnt + g.sCnt) * weight + sofar)
+                        g.tail
+                        g.next
+
+                Red r ->
+                    lengthHelp (Bitwise.shiftLeftBy 2 weight)
+                        (((r.child.pCnt + r.child.sCnt) * 2 + r.pCnt + r.sCnt) * weight + sofar)
+                        r.tail
+                        r.next
+
+                End ->
+                    sofar
