@@ -2,8 +2,8 @@ module Queue exposing
     ( Queue
     , empty, fromListLIFO, fromListFIFO
     , isEmpty, isEqualTo, head, rear, length
-    , enqueue, dequeue
-    , toListLIFO, toListFIFO
+    , enqueue, dequeue, map
+    , toListLIFO, toListFIFO, fold
     )
 
 {-| This module provides functionalities as one-way queue. The worst-case time complexity of `enqueue` and `dequeue` is _O(1)_.
@@ -26,12 +26,12 @@ module Queue exposing
 
 # Update
 
-@docs enqueue, dequeue
+@docs enqueue, dequeue, map
 
 
 # Deconstruction
 
-@docs toListLIFO, toListFIFO
+@docs toListLIFO, toListFIFO, fold
 
 -}
 
@@ -968,11 +968,11 @@ toListLIFO q =
 toListLIFOHelp : Queue a -> List a -> List a
 toListLIFOHelp q sofar =
     case head q of
-        Just h ->
-            toListLIFOHelp (dequeue q) (h :: sofar)
-
         Nothing ->
             sofar
+
+        Just a ->
+            toListLIFOHelp (dequeue q) (a :: sofar)
 
 
 {-| Converts a `Queue` to a `List` in a way that first-in element in the queue becomes first-out element in the list.
@@ -1082,3 +1082,45 @@ lengthHelp weight sofar tail next =
 
                 End ->
                     sofar
+
+
+{-| produces one value that sums up the all elements in the queue.
+The fold function is applied in the order of insertion.
+
+     ["e", "l", "m"]
+        |> fromListLIFO
+        |> fold (++) "" --> "mle"
+
+-}
+fold : (c -> a -> a) -> a -> Queue c -> a
+fold f acc q =
+    case head q of
+        Just crr ->
+            fold f (f crr acc) (dequeue q)
+
+        Nothing ->
+            acc
+
+
+{-| Updates all elements in the `Queue` with given function.
+
+     [1, 2, 3]
+        |> fromListLIFO
+        |> map (\x -> x * x)
+        |> map (String.fromInt)
+        |> toListLIFO --> ["9","4","1"]
+
+-}
+map : (a -> b) -> Queue a -> Queue b
+map f q =
+    mapHelp f q empty
+
+
+mapHelp : (a -> b) -> Queue a -> Queue b -> Queue b
+mapHelp f qa qb =
+    case head qa of
+        Just a ->
+            mapHelp f (dequeue qa) (enqueue (f a) qb)
+
+        Nothing ->
+            qb
